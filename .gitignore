@@ -1,0 +1,30 @@
+# Rust build artifacts
+/target/
+
+# System and IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Temporary and local test files
+*.tmp
+*.tmp.*
+.tmp*
+/tmp/
+
+# OpenMausBot / AI agent internal workspace logs
+memory/
+MEMORY.md
+.agents/
+.claude/
+.openmausbot/
+
+# Arch Linux local packaging artifacts
+*.pkg.tar.zst
+*.pkg.tar.xz
+vinylplayer-*.tar.gz
+packaging/arch/src/
+packaging/arch/pkg/

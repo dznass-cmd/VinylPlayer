@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=VinylPlayer
+Comment=Player de música nativo e leve
+Exec=vinylplayer %U
+Icon=vinylplayer
+Terminal=false
+Categories=Audio;AudioVideo;Player;GTK;
+MimeType=audio/flac;audio/mpeg;audio/ogg;audio/wav;audio/x-wav;
+StartupNotify=true
+Keywords=música;player;áudio;vinil;

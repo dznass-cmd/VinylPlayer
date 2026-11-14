@@ -1,0 +1,32 @@
+pkgname=vinylplayer
+pkgver=0.1.0
+pkgrel=11
+pkgdesc='Player de música nativo, leve e integrado ao desktop Linux'
+arch=('x86_64')
+url='https://github.com/dznass-cmd/VinylPlayer'
+license=('GPL-3.0-or-later')
+depends=('gtk4' 'libadwaita' 'gstreamer' 'gst-plugins-base' 'gst-plugins-good' 'gst-plugin-pipewire')
+optdepends=(
+  'ffmpeg: leitura de metadados e tags avançadas com ffprobe'
+  'flac: extração de capas embutidas em FLAC com metaflac'
+)
+makedepends=('cargo')
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('42f3576d1d9d68e2dfd58ac6a3723617af153e8f2f85c370283a44a3bd23d911')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  cargo fetch --locked
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  cargo build --release --locked
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 target/release/vinylplayer "$pkgdir/usr/bin/vinylplayer"
+  install -Dm644 vinylplayer.desktop "$pkgdir/usr/share/applications/vinylplayer.desktop"
+  install -Dm644 assets/vinylplayer.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/vinylplayer.svg"
+}
