@@ -230,7 +230,7 @@ fn build_ui_with_catalog(
 
     let search_hub = search::SearchHub::new();
 
-    let title_label = gtk::Label::new(Some("Toca-discos"));
+    let title_label = gtk::Label::new(Some("Turntable"));
     title_label.add_css_class("page-title");
     title_label.set_hexpand(true);
     title_label.set_xalign(0.0);
@@ -258,10 +258,10 @@ fn build_ui_with_catalog(
         .unwrap();
     let queue_toggle = gtk::ToggleButton::new();
     queue_toggle.add_css_class("queue-toggle");
-    queue_toggle.set_tooltip_text(Some("Mostrar ou ocultar fila · Ctrl+J"));
+    queue_toggle.set_tooltip_text(Some("Toggle queue · Ctrl+J"));
     let queue_label = gtk::Box::new(Orientation::Horizontal, 7);
     queue_label.append(&gtk::Image::from_icon_name("view-list-symbolic"));
-    queue_label.append(&gtk::Label::new(Some("Fila")));
+    queue_label.append(&gtk::Label::new(Some("Queue")));
     queue_toggle.set_child(Some(&queue_label));
     queue_toggle
         .bind_property("active", &queue_split, "show-sidebar")
@@ -517,14 +517,14 @@ fn build_ui_with_catalog(
         // Captura inclusive uma edição feita depois do último tick de 250 ms.
         state_close.update_queue(audio_close.queue_snapshot());
         if let Err(error) = state_close.flush_now() {
-            eprintln!("Não foi possível salvar as preferências ao fechar: {error}");
+            eprintln!("Could not save preferences on exit: {error}");
             let dialog = adw::MessageDialog::builder()
                 .transient_for(window)
                 .destroy_with_parent(true)
-                .heading("Não foi possível salvar as preferências")
-                .body(format!("As alterações continuam pendentes. Verifique o espaço e as permissões da pasta de configuração e tente fechar novamente.\n\n{error}"))
+                .heading("Could not save preferences")
+                .body(format!("Changes remain pending. Check disk space and permissions in the configuration directory and try closing again.\n\n{error}"))
                 .build();
-            dialog.add_response("back", "Voltar ao player");
+            dialog.add_response("back", "Back to player");
             dialog.set_close_response("back");
             dialog.present();
             return glib::Propagation::Stop;
@@ -616,9 +616,9 @@ fn sidebar() -> (gtk::Widget, Vec<(gtk::Button, &'static str, &'static str)>) {
 
     let mut nav_buttons = Vec::new();
     let items = [
-        ("media-optical-symbolic", "Toca-discos", "overview"),
-        ("audio-x-generic-symbolic", "Faixas", "tracks"),
-        ("view-grid-symbolic", "Álbuns", "albums"),
+        ("media-optical-symbolic", "Turntable", "overview"),
+        ("audio-x-generic-symbolic", "Tracks", "tracks"),
+        ("view-grid-symbolic", "Albums", "albums"),
         ("view-list-symbolic", "Playlists", "playlists"),
     ];
 
@@ -639,20 +639,20 @@ fn sidebar() -> (gtk::Widget, Vec<(gtk::Button, &'static str, &'static str)>) {
     // Status do sistema de áudio
     let audio_pill = gtk::Box::new(Orientation::Vertical, 2);
     audio_pill.add_css_class("system-audio-pill");
-    let pipe_lbl = gtk::Label::new(Some("BIBLIOTECA LOCAL"));
+    let pipe_lbl = gtk::Label::new(Some("LOCAL LIBRARY"));
     pipe_lbl.add_css_class("system-audio-title");
     pipe_lbl.set_xalign(0.0);
-    let sample_lbl = gtk::Label::new(Some("Arraste uma faixa para ouvir"));
+    let sample_lbl = gtk::Label::new(Some("Drag and drop a track to play"));
     sample_lbl.add_css_class("system-audio-sub");
     sample_lbl.set_xalign(0.0);
     audio_pill.append(&pipe_lbl);
     audio_pill.append(&sample_lbl);
     side.append(&audio_pill);
 
-    let settings = labeled_icon_button("preferences-system-symbolic", "Configurações");
+    let settings = labeled_icon_button("preferences-system-symbolic", "Settings");
     settings.add_css_class("nav-button");
     settings.set_action_name(Some("win.library-settings"));
-    settings.set_tooltip_text(Some("Escolher pastas da biblioteca"));
+    settings.set_tooltip_text(Some("Choose library folders"));
     side.append(&settings);
 
     (side.upcast(), nav_buttons)
@@ -674,18 +674,18 @@ fn library_view(
     outer.set_margin_bottom(18);
     let header_box = gtk::Box::new(Orientation::Horizontal, 16);
     header_box.set_margin_top(18);
-    let heading = gtk::Label::new(Some("Músicas"));
+    let heading = gtk::Label::new(Some("Tracks"));
     heading.add_css_class("page-title");
     heading.set_xalign(0.0);
     heading.set_hexpand(true);
     header_box.append(&heading);
 
-    let sort_options = ["Título (A–Z)", "Título (Z–A)", "Caminho (Padrão)"];
+    let sort_options = ["Title (A–Z)", "Title (Z–A)", "Path (Default)"];
     let sort_dropdown = gtk::DropDown::from_strings(&sort_options);
     let initial_track_sort = state_mgr.snapshot().track_sort_mode;
     sort_dropdown.set_selected(initial_track_sort as u32);
     sort_dropdown.add_css_class("sort-dropdown");
-    sort_dropdown.set_tooltip_text(Some("Critério de ordenação das faixas"));
+    sort_dropdown.set_tooltip_text(Some("Track sort criteria"));
     header_box.append(&sort_dropdown);
     outer.append(&header_box);
 
@@ -823,24 +823,24 @@ fn album_library_view(
     navigation.add_named(&outer, Some("browse"));
     let toolbar = gtk::Box::new(Orientation::Horizontal, 16);
     toolbar.set_margin_top(18);
-    let heading = gtk::Label::new(Some("Álbuns"));
+    let heading = gtk::Label::new(Some("Albums"));
     heading.set_xalign(0.0);
     heading.set_hexpand(true);
     heading.add_css_class("page-title");
     toolbar.append(&heading);
 
     let sort_options = [
-        "Álbum (A–Z)",
-        "Álbum (Z–A)",
-        "Artista (A–Z)",
-        "Ano (Mais recentes)",
-        "Ano (Mais antigos)",
+        "Album (A–Z)",
+        "Album (Z–A)",
+        "Artist (A–Z)",
+        "Year (Newest)",
+        "Year (Oldest)",
     ];
     let sort_dropdown = gtk::DropDown::from_strings(&sort_options);
     let initial_album_sort = state_mgr.snapshot().album_sort_mode;
     sort_dropdown.set_selected(initial_album_sort as u32);
     sort_dropdown.add_css_class("sort-dropdown");
-    sort_dropdown.set_tooltip_text(Some("Critério de ordenação dos álbuns"));
+    sort_dropdown.set_tooltip_text(Some("Album sort criteria"));
     toolbar.append(&sort_dropdown);
 
     let views = gtk::Stack::new();
@@ -883,7 +883,7 @@ fn album_library_view(
                 ),
                 Err(_) => {
                     spinner.stop();
-                    status.set_text("Não foi possível organizar os álbuns.");
+                    status.set_text("Could not organize albums.");
                 }
             }
         }
@@ -911,7 +911,7 @@ fn populate_album_views(
     };
     let mode_cell = Rc::new(std::cell::Cell::new(initial_mode));
     let (grid_widget, grid) = album_grid(audio, &albums, navigation, &mode_cell, search_hub);
-    views.add_titled(&grid_widget, Some("covers"), "Capas");
+    views.add_titled(&grid_widget, Some("covers"), "Covers");
 
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::None);
@@ -1078,7 +1078,7 @@ fn populate_album_views(
     });
 
     scrolled.set_child(Some(&list));
-    views.add_titled(&scrolled, Some("list"), "Lista");
+    views.add_titled(&scrolled, Some("list"), "List");
     views.set_visible_child_name("covers");
     if let Some(loading) = views.child_by_name("loading") {
         views.remove(&loading);
@@ -1335,7 +1335,7 @@ fn album_detail(
     page.set_margin_end(28);
     page.set_margin_top(20);
     page.set_margin_bottom(18);
-    let back = labeled_icon_button("go-previous-symbolic", "Voltar aos álbuns");
+    let back = labeled_icon_button("go-previous-symbolic", "Back to albums");
     back.add_css_class("nav-button");
     back.set_halign(gtk::Align::Start);
     back.set_widget_name("album-back");
@@ -1376,11 +1376,11 @@ fn album_detail(
     title.set_max_width_chars(35);
     title.add_css_class("page-title");
     info.append(&title);
-    let count = gtk::Label::new(Some(&format!("{} faixas · Álbum local", tracks.len())));
+    let count = gtk::Label::new(Some(&format!("{} tracks · Local album", tracks.len())));
     count.set_xalign(0.0);
     count.add_css_class("bottom-artist-title");
     info.append(&count);
-    let play = labeled_icon_button("media-playback-start-symbolic", "Reproduzir álbum");
+    let play = labeled_icon_button("media-playback-start-symbolic", "Play album");
     play.add_css_class("open-button");
     play.set_widget_name("album-play");
     play.set_halign(gtk::Align::Start);
@@ -1430,7 +1430,7 @@ fn track_row_in_queue(
         button.set_margin_start(24);
     }
 
-    let title = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Faixa");
+    let title = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Track");
     let format = path
         .extension()
         .and_then(|s| s.to_str())
@@ -1489,15 +1489,15 @@ fn queue_actions(
     menu.set_widget_name("queue-actions");
     menu.add_css_class("enqueue-menu");
     if album {
-        menu.set_label("Adicionar à fila");
+        menu.set_label("Add to queue");
         menu.set_halign(gtk::Align::Start);
     } else {
         menu.set_icon_name("view-more-symbolic");
     }
     menu.set_tooltip_text(Some(if album {
-        "Opções de fila para este álbum"
+        "Queue options for this album"
     } else {
-        "Opções de fila para esta faixa"
+        "Queue options for this track"
     }));
     menu.set_valign(gtk::Align::Center);
     let audio = audio.clone();
@@ -1510,8 +1510,8 @@ fn queue_actions(
         error.set_visible(false);
         error.add_css_class("queue-error");
         for (name, label, next) in [
-            ("enqueue-next", "Tocar a seguir", true),
-            ("enqueue-last", "Adicionar ao final", false),
+            ("enqueue-next", "Play next", true),
+            ("enqueue-last", "Add to end", false),
         ] {
             let button = gtk::Button::with_label(label);
             button.set_widget_name(name);
@@ -1525,7 +1525,7 @@ fn queue_actions(
                 Ok(()) => {
                     error.set_visible(false);
                     if let Some(menu) = weak_menu.upgrade() {
-                        menu.set_tooltip_text(Some("Adicionado à fila"));
+                        menu.set_tooltip_text(Some("Added to queue"));
                     }
                     if let Some(popover) = weak_popover.upgrade() {
                         popover.popdown();
@@ -1546,7 +1546,7 @@ fn queue_actions(
             let sep = gtk::Separator::new(Orientation::Horizontal);
             options.append(&sep);
 
-            let pl_lbl = gtk::Label::new(Some("Adicionar à playlist:"));
+            let pl_lbl = gtk::Label::new(Some("Add to playlist:"));
             pl_lbl.set_xalign(0.0);
             pl_lbl.add_css_class("bottom-artist-title");
             options.append(&pl_lbl);
@@ -1582,20 +1582,20 @@ fn queue_actions(
                     match pl_mgr.add_tracks_to_playlist(&pl_path, &tracks) {
                         Ok(()) => {
                             let msg = if tracks.len() == 1 {
-                                format!("Faixa adicionada a \"{pl_name}\"!")
+                                format!("Track added to \"{pl_name}\"!")
                             } else {
-                                format!("{} faixas adicionadas a \"{pl_name}\"!", tracks.len())
+                                format!("{} tracks added to \"{pl_name}\"!", tracks.len())
                             };
                             if let Some(m) = weak_m.upgrade() {
                                 m.set_tooltip_text(Some(&msg));
                             }
-                            show_system_notification("Playlist Atualizada", &msg);
+                            show_system_notification("Playlist Updated", &msg);
                             if let Some(p) = weak_pop.upgrade() {
                                 p.popdown();
                             }
                         }
                         Err(e) => {
-                            error_clone.set_text(&format!("Erro ao salvar: {e}"));
+                            error_clone.set_text(&format!("Error saving: {e}"));
                             error_clone.set_visible(true);
                         }
                     }
@@ -1637,7 +1637,7 @@ fn header(
     bar.append(title_label);
 
     let search = gtk::SearchEntry::new();
-    search.set_placeholder_text(Some("Buscar faixas, artistas ou álbuns..."));
+    search.set_placeholder_text(Some("Search tracks, artists, or albums..."));
     search.set_width_chars(28);
     search.add_css_class("search-box");
 
@@ -1652,7 +1652,7 @@ fn header(
             && stack_switch.visible_child_name().as_deref() == Some("overview")
         {
             stack_switch.set_visible_child_name("tracks");
-            title_ref.set_text("Músicas");
+            title_ref.set_text("Tracks");
             for (b, page, _) in &nav_buttons_switch {
                 if *page == "tracks" {
                     b.add_css_class("active-nav");
@@ -1674,12 +1674,12 @@ fn header(
     });
     bar.append(&search);
 
-    let open = labeled_icon_button("folder-open-symbolic", "Abrir faixa");
+    let open = labeled_icon_button("folder-open-symbolic", "Open track");
     open.add_css_class("open-button");
     let open_audio = audio.clone();
     open.connect_clicked(move |_| {
         let dialog = gtk::FileDialog::builder()
-            .title("Abrir arquivo de áudio")
+            .title("Open audio file")
             .build();
         let engine = open_audio.clone();
         glib::MainContext::default().spawn_local(async move {
@@ -1746,7 +1746,7 @@ fn main_stage(
 
     let rpm_box = gtk::Box::new(Orientation::Horizontal, 0);
     rpm_box.add_css_class("rpm-selector");
-    rpm_box.set_tooltip_text(Some("Velocidade de rotação: 33 ⅓ RPM ou 45 RPM"));
+    rpm_box.set_tooltip_text(Some("Rotational speed: 33 ⅓ RPM or 45 RPM"));
 
     let btn_33 = gtk::ToggleButton::new();
     btn_33.set_label("33 ⅓");
@@ -2127,7 +2127,7 @@ fn main_stage(
             last_meta_ver.set(current_ver);
             let m = tick_audio.metadata();
             title.set_text(if m.title.is_empty() {
-                "Escolha sua próxima faixa"
+                "Choose your next track"
             } else {
                 &m.title
             });
@@ -2143,7 +2143,7 @@ fn main_stage(
                 .collect::<Vec<_>>()
                 .join(" · ");
             artist.set_text(if detail.is_empty() {
-                "Arquivo de áudio local"
+                "Local audio file"
             } else {
                 &detail
             });
@@ -5460,10 +5460,10 @@ fn draw_rounded_rect(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r
 fn update_shuffle_btn(btn: &gtk::Button, active: bool) {
     if active {
         btn.add_css_class("active");
-        btn.set_tooltip_text(Some("Ordem aleatória (Shuffle) · Ativada"));
+        btn.set_tooltip_text(Some("Shuffle · Enabled"));
     } else {
         btn.remove_css_class("active");
-        btn.set_tooltip_text(Some("Ordem aleatória (Shuffle) · Desativada"));
+        btn.set_tooltip_text(Some("Shuffle · Disabled"));
     }
 }
 
@@ -5473,21 +5473,21 @@ fn update_repeat_btn(btn: &gtk::Button, mode: RepeatMode) {
             btn.remove_css_class("active");
             btn.set_icon_name("media-playlist-repeat-symbolic");
             btn.set_tooltip_text(Some(
-                "Repetição · Desativada (clique para repetir toda a fila)",
+                "Repeat · Off (click to repeat entire queue)",
             ));
         }
         RepeatMode::All => {
             btn.add_css_class("active");
             btn.set_icon_name("media-playlist-repeat-symbolic");
             btn.set_tooltip_text(Some(
-                "Repetição · Repetir fila inteira (clique para repetir a faixa atual)",
+                "Repeat · All (click to repeat current track)",
             ));
         }
         RepeatMode::Track => {
             btn.add_css_class("active");
             btn.set_icon_name("media-playlist-repeat-song-symbolic");
             btn.set_tooltip_text(Some(
-                "Repetição · Repetir música atual (clique para desativar)",
+                "Repeat · Track (click to turn off)",
             ));
         }
     }
@@ -5514,7 +5514,7 @@ fn player_bar(
 
     let text_group = gtk::Box::new(Orientation::Vertical, 2);
     text_group.set_valign(gtk::Align::Center);
-    let title_lbl = gtk::Label::new(Some("Nenhuma faixa carregada"));
+    let title_lbl = gtk::Label::new(Some("No track loaded"));
     title_lbl.add_css_class("bottom-track-title");
     title_lbl.set_xalign(0.0);
     title_lbl.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -5547,13 +5547,13 @@ fn player_bar(
     shuffle_btn.add_css_class("shuffle-button");
 
     let prev = gtk::Button::from_icon_name("media-skip-backward-symbolic");
-    prev.set_tooltip_text(Some("Faixa anterior · ←"));
+    prev.set_tooltip_text(Some("Previous track · ←"));
     prev.add_css_class("control-button");
     let toggle = gtk::Button::from_icon_name("media-playback-start-symbolic");
-    toggle.set_tooltip_text(Some("Reproduzir / pausar · Espaço"));
+    toggle.set_tooltip_text(Some("Play / pause · Space"));
     toggle.add_css_class("play-button");
     let next = gtk::Button::from_icon_name("media-skip-forward-symbolic");
-    next.set_tooltip_text(Some("Próxima faixa · →"));
+    next.set_tooltip_text(Some("Next track · →"));
     next.add_css_class("control-button");
 
     let repeat_btn = gtk::Button::from_icon_name("media-playlist-repeat-symbolic");

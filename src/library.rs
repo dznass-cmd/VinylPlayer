@@ -306,7 +306,7 @@ pub fn load_album_metadata(paths: Vec<PathBuf>) -> Vec<AlbumMetadata> {
                                         folder
                                             .file_name()
                                             .and_then(|n| n.to_str())
-                                            .unwrap_or("Álbum desconhecido")
+                                            .unwrap_or("Unknown Album")
                                             .to_string()
                                     });
                             let artist = tags
@@ -318,9 +318,9 @@ pub fn load_album_metadata(paths: Vec<PathBuf>) -> Vec<AlbumMetadata> {
                                         .and_then(|p| p.file_name())
                                         .and_then(|n| n.to_str())
                                         .filter(|n| {
-                                            *n != "music" && *n != "Albums" && *n != "Músicas"
+                                            *n != "music" && *n != "Albums" && *n != "Músicas" && *n != "Tracks"
                                         })
-                                        .unwrap_or("Artista desconhecido")
+                                        .unwrap_or("Unknown Artist")
                                         .to_string()
                                 });
                             let year = tags.as_ref().and_then(|t| t.year);

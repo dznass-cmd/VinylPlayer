@@ -20,7 +20,7 @@ fn validate(files: &[gtk::gio::File]) -> Request {
     for file in files {
         let Some(path) = file.path() else {
             request.rejected.push(format!(
-                "{}: somente arquivos locais são aceitos",
+                "{}: only local files are supported",
                 file.uri()
             ));
             continue;
@@ -31,14 +31,14 @@ fn validate(files: &[gtk::gio::File]) -> Request {
             .unwrap_or("")
             .to_ascii_lowercase();
         let reason = if !path.is_file() {
-            Some("arquivo não encontrado ou não é um arquivo regular")
+            Some("file not found or not a regular file")
         } else if ![
             "flac", "mp3", "ogg", "oga", "wav", "m4a", "aac", "opus", "alac", "aif", "aiff", "wma",
             "m3u", "m3u8",
         ]
         .contains(&extension.as_str())
         {
-            Some("formato de áudio não reconhecido")
+            Some("unrecognized audio format")
         } else {
             None
         };
@@ -90,15 +90,15 @@ fn show_errors(window: &gtk::Window, errors: &[String]) {
         .collect::<Vec<_>>()
         .join("\n\n");
     if errors.len() > 5 {
-        body.push_str(&format!("\n\nE mais {} arquivo(s).", errors.len() - 5));
+        body.push_str(&format!("\n\nAnd {} more file(s).", errors.len() - 5));
     }
     let dialog = libadwaita::MessageDialog::builder()
         .transient_for(window)
         .destroy_with_parent(true)
-        .heading("Não foi possível abrir alguns arquivos")
+        .heading("Could not open some files")
         .body(&body)
         .build();
-    dialog.add_response("ok", "Entendi");
+    dialog.add_response("ok", "OK");
     dialog.set_close_response("ok");
     dialog.present();
 }
@@ -131,7 +131,7 @@ pub fn connect_handlers(
                         Ok(pl) => playable_tracks.extend(pl.tracks),
                         Err(e) => request
                             .rejected
-                            .push(format!("{}: falha ao ler playlist ({e})", p.display())),
+                            .push(format!("{}: failed to read playlist ({e})", p.display())),
                     }
                 } else {
                     playable_tracks.push(p.clone());
@@ -150,7 +150,7 @@ pub fn connect_handlers(
                     }
                     Err(error) => request
                         .rejected
-                        .push(format!("Falha ao iniciar a reprodução: {error}")),
+                        .push(format!("Failed to start playback: {error}")),
                 }
             }
         }

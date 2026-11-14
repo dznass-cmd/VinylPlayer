@@ -42,7 +42,7 @@ impl QueuePanel {
         widget.set_widget_name("playback-queue");
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         header.add_css_class("queue-heading");
-        let title = gtk::Label::new(Some("Fila de reprodução"));
+        let title = gtk::Label::new(Some("Playback queue"));
         title.add_css_class("queue-title");
         title.set_hexpand(true);
         title.set_xalign(0.0);
@@ -50,11 +50,11 @@ impl QueuePanel {
         let current_button = gtk::Button::from_icon_name("go-jump-symbolic");
         current_button.add_css_class("queue-close");
         current_button.set_widget_name("queue-reveal-current");
-        current_button.set_tooltip_text(Some("Mostrar faixa atual"));
+        current_button.set_tooltip_text(Some("Show current track"));
         header.append(&current_button);
         let close = gtk::Button::from_icon_name("window-close-symbolic");
         close.add_css_class("queue-close");
-        close.set_tooltip_text(Some("Fechar fila"));
+        close.set_tooltip_text(Some("Close queue"));
         close.set_action_name(Some("win.toggle-queue"));
         header.append(&close);
         widget.append(&header);
@@ -65,14 +65,14 @@ impl QueuePanel {
         let search = gtk::SearchEntry::new();
         search.add_css_class("queue-search");
         search.set_widget_name("queue-search");
-        search.set_placeholder_text(Some("Título, artista ou álbum"));
+        search.set_placeholder_text(Some("Title, artist, or album"));
         search.set_hexpand(true);
-        search.update_property(&[gtk::accessible::Property::Label("Buscar na fila")]);
+        search.update_property(&[gtk::accessible::Property::Label("Search queue")]);
         search_box.append(&search);
-        let clear = gtk::Button::with_label("Limpar");
+        let clear = gtk::Button::with_label("Clear");
         clear.add_css_class("queue-clear");
         clear.set_widget_name("queue-search-clear");
-        clear.set_tooltip_text(Some("Limpar busca"));
+        clear.set_tooltip_text(Some("Clear search"));
         search_box.append(&clear);
         widget.append(&search_box);
         let count = gtk::Label::new(None);
@@ -162,7 +162,7 @@ impl QueuePanel {
         let list = gtk::ListView::new(Some(selection), Some(factory));
         list.set_widget_name("queue-list");
         list.add_css_class("queue-list");
-        list.update_property(&[gtk::accessible::Property::Label("Fila de reprodução")]);
+        list.update_property(&[gtk::accessible::Property::Label("Playback queue")]);
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
@@ -279,26 +279,26 @@ fn apply_filter(shared: &Rc<Shared>) {
             .any(|path| !shared.tags.borrow().contains_key(path));
         let next = snapshot.current.map_or(len, |i| len.saturating_sub(i + 1));
         if query.trim().is_empty() {
-            let noun = if len == 1 { "faixa" } else { "faixas" };
+            let noun = if len == 1 { "track" } else { "tracks" };
             shared
                 .count
-                .set_text(&format!("{len} {noun} · {next} a seguir"));
+                .set_text(&format!("{len} {noun} · {next} upcoming"));
         } else {
             let loading = if pending {
-                " · lendo metadados…"
+                " · reading metadata…"
             } else {
                 ""
             };
             shared
                 .count
-                .set_text(&format!("{} de {len} faixas{loading}", indices.len()));
+                .set_text(&format!("{} of {len} tracks{loading}", indices.len()));
         }
         shared.empty.set_text(if len == 0 {
-            "Sua fila está vazia.\nAbra uma música ou reproduza um álbum."
+            "Your queue is empty.\nOpen a track or play an album."
         } else if pending {
-            "Lendo os metadados da fila…"
+            "Reading queue metadata…"
         } else {
-            "Nenhuma faixa encontrada.\nTente outro termo ou limpe a busca."
+            "No tracks found.\nTry another search term or clear."
         });
         shared.empty.set_visible(indices.is_empty());
     }
@@ -384,9 +384,9 @@ fn setup_row(item: &gtk::ListItem, shared: &Rc<Shared>) {
     row.append(&play);
     let buttons = gtk::Box::new(gtk::Orientation::Vertical, 0);
     for (icon, label, direction) in [
-        ("go-up-symbolic", "Mover para cima", -1_isize),
-        ("go-down-symbolic", "Mover para baixo", 1),
-        ("list-remove-symbolic", "Remover da fila", 0),
+        ("go-up-symbolic", "Move up", -1_isize),
+        ("go-down-symbolic", "Move down", 1),
+        ("list-remove-symbolic", "Remove from queue", 0),
     ] {
         let button = gtk::Button::from_icon_name(icon);
         button.set_tooltip_text(Some(label));
@@ -588,7 +588,7 @@ fn update_row(item: &gtk::ListItem, shared: &Shared) {
     }
     play.set_tooltip_text(Some(&path.to_string_lossy()));
     play.update_property(&[gtk::accessible::Property::Label(&format!(
-        "Reproduzir {}",
+        "Play {}",
         title.text()
     ))]);
     let buttons = row.last_child().unwrap();

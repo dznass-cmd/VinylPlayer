@@ -1,7 +1,7 @@
 pkgname=vinylplayer
 pkgver=0.1.0
 pkgrel=11
-pkgdesc='Player de música nativo, leve e integrado ao desktop Linux'
+pkgdesc='Analog-inspired, lightweight, and native music player for the Linux desktop'
 arch=('x86_64')
 url='https://github.com/dznass-cmd/VinylPlayer'
 license=('GPL-3.0-or-later')

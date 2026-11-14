@@ -72,7 +72,7 @@ impl Catalog {
             }
             *catalog.report.borrow_mut() = result.unwrap_or_else(|_| library_sources::ScanReport {
                 tracks: Vec::new(),
-                warnings: vec!["Não foi possível ler as pastas. Tente atualizar novamente.".into()],
+                warnings: vec!["Could not read folders. Try refreshing again.".into()],
             });
             catalog.notify();
         });
@@ -80,7 +80,7 @@ impl Catalog {
 
     pub fn add_root(self: &Rc<Self>, path: PathBuf) -> Result<(), String> {
         if !path.is_absolute() || !path.is_dir() {
-            return Err("Escolha uma pasta local disponível.".into());
+            return Err("Please choose an available local folder.".into());
         }
         let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
         let mut roots = self.state.snapshot().library_roots();
@@ -88,7 +88,7 @@ impl Catalog {
             .iter()
             .any(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) == path)
         {
-            return Err("Esta pasta já está na biblioteca.".into());
+            return Err("This folder is already in the library.".into());
         }
         roots.push(path);
         self.state.update_library_folders(roots);
@@ -107,15 +107,15 @@ impl Catalog {
 
     pub fn summary(&self) -> String {
         if self.scanning.get() {
-            "Lendo pastas da biblioteca…".into()
+            "Reading library folders…".into()
         } else {
             let report = self.report.borrow();
             let count = report.tracks.len();
-            let noun = if count == 1 { "música" } else { "músicas" };
+            let noun = if count == 1 { "track" } else { "tracks" };
             match report.warnings.len() {
                 0 => format!("{count} {noun}"),
-                1 => format!("{count} {noun} · 1 aviso"),
-                warnings => format!("{count} {noun} · {warnings} avisos"),
+                1 => format!("{count} {noun} · 1 warning"),
+                warnings => format!("{count} {noun} · {warnings} warnings"),
             }
         }
     }
@@ -123,7 +123,7 @@ impl Catalog {
 
 pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Window {
     let window = gtk::Window::builder()
-        .title("Pastas da biblioteca")
+        .title("Library Folders")
         .transient_for(parent)
         .destroy_with_parent(true)
         .default_width(580)
@@ -136,16 +136,16 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     body.set_margin_bottom(22);
     body.set_margin_start(22);
     body.set_margin_end(22);
-    let title = gtk::Label::new(Some("Sua coleção, suas pastas"));
+    let title = gtk::Label::new(Some("Your collection, your folders"));
     title.add_css_class("page-title");
     title.set_xalign(0.0);
     title.set_hexpand(true);
     let heading = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     heading.append(&title);
-    let close = gtk::Button::with_label("Fechar");
+    let close = gtk::Button::with_label("Close");
     close.set_widget_name("folder-close");
     close.add_css_class("folder-button");
-    close.set_tooltip_text(Some("Fechar configurações da biblioteca"));
+    close.set_tooltip_text(Some("Close library settings"));
     let weak_window = window.downgrade();
     close.connect_clicked(move |_| {
         if let Some(window) = weak_window.upgrade() {
@@ -154,16 +154,16 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     });
     heading.append(&close);
     body.append(&heading);
-    let hint = gtk::Label::new(Some("Adicionar ou remover pastas atualiza a biblioteca. Seus arquivos e a fila atual são mantidos."));
+    let hint = gtk::Label::new(Some("Adding or removing folders updates the library. Your files and current queue are preserved."));
     hint.set_wrap(true);
     hint.set_xalign(0.0);
     hint.add_css_class("bottom-artist-title");
     body.append(&hint);
     let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    let add = gtk::Button::with_label("Adicionar pasta");
+    let add = gtk::Button::with_label("Add Folder");
     add.set_widget_name("folder-add");
     add.add_css_class("open-button");
-    let refresh = gtk::Button::with_label("Atualizar biblioteca");
+    let refresh = gtk::Button::with_label("Refresh Library");
     refresh.add_css_class("folder-button");
     refresh.set_widget_name("folder-refresh");
     toolbar.append(&add);
@@ -176,7 +176,7 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::None);
     list.add_css_class("folders-list");
-    let empty = gtk::Label::new(Some("Nenhuma pasta adicionada."));
+    let empty = gtk::Label::new(Some("No folders added."));
     list.set_placeholder(Some(&empty));
     let scroll = gtk::ScrolledWindow::builder()
         .vexpand(true)
@@ -189,12 +189,12 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     analog_box.set_margin_top(10);
     analog_box.set_margin_bottom(6);
 
-    let analog_title = gtk::Label::new(Some("Experiência Analógica"));
+    let analog_title = gtk::Label::new(Some("Analog Experience"));
     analog_title.add_css_class("system-audio-title");
     analog_title.set_xalign(0.0);
     analog_box.append(&analog_title);
 
-    let chk_needle = gtk::CheckButton::with_label("Efeito sonoro de Needle Drop ao iniciar reprodução");
+    let chk_needle = gtk::CheckButton::with_label("Needle Drop acoustic effect on playback start");
     chk_needle.set_active(catalog.state.snapshot().needle_drop);
     let state_needle = catalog.state.clone();
     chk_needle.connect_toggled(move |btn| {
@@ -203,7 +203,7 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     });
     analog_box.append(&chk_needle);
 
-    let chk_light = gtk::CheckButton::with_label("Luz Alvo da Agulha (Stylus Target Light) no prato");
+    let chk_light = gtk::CheckButton::with_label("Stylus Target Light on platter");
     chk_light.set_active(catalog.state.snapshot().target_light);
     let state_light = catalog.state.clone();
     chk_light.connect_toggled(move |btn| {
@@ -260,7 +260,7 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
             let remove = gtk::Button::from_icon_name("user-trash-symbolic");
             remove.set_widget_name("folder-remove");
             remove.add_css_class("folder-button");
-            remove.set_tooltip_text(Some("Remover pasta da biblioteca"));
+            remove.set_tooltip_text(Some("Remove folder from library"));
             remove.set_valign(gtk::Align::Center);
             let weak = weak_catalog.clone();
             remove.connect_clicked(move |_| {
@@ -300,7 +300,7 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
         let weak_error = weak_error.clone();
         let weak_window = window.downgrade();
         gtk::FileDialog::builder()
-            .title("Adicionar pasta de músicas")
+            .title("Add music folder")
             .build()
             .select_folder(
                 Some(&window),
@@ -312,7 +312,7 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
                     let result = match result {
                         Ok(file) => file
                             .path()
-                            .ok_or_else(|| "Escolha uma pasta local.".to_string())
+                            .ok_or_else(|| "Choose a local folder.".to_string())
                             .and_then(|path| catalog.add_root(path)),
                         Err(error)
                             if error.matches(gtk::DialogError::Dismissed)

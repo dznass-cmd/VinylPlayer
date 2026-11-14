@@ -2,11 +2,12 @@
 Version=1.0
 Type=Application
 Name=VinylPlayer
-Comment=Player de música nativo e leve
+GenericName=Music Player
+Comment=Analog-inspired, lightweight, and native music player
 Exec=vinylplayer %U
 Icon=vinylplayer
 Terminal=false
 Categories=Audio;AudioVideo;Player;GTK;
-MimeType=audio/flac;audio/mpeg;audio/ogg;audio/wav;audio/x-wav;
+MimeType=audio/flac;audio/mpeg;audio/ogg;audio/wav;audio/x-wav;audio/mp4;audio/aac;audio/opus;
 StartupNotify=true
-Keywords=música;player;áudio;vinil;
+Keywords=music;player;audio;vinyl;turntable;

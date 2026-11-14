@@ -54,22 +54,22 @@ impl ErrorPresenter {
             .ok()
             .is_some_and(|(p, _)| !p.is_file());
         let reason = if missing {
-            "O arquivo não está disponível. Verifique se ele foi movido ou se o disco está conectado."
+            "The file is not available. Check if it was moved or if the disk is connected."
         } else {
-            "Não foi possível reproduzir o áudio. O arquivo pode estar danificado, o formato pode não ser compatível ou a saída de áudio pode estar indisponível."
+            "Could not play audio. The file may be corrupted, the format unsupported, or the audio output unavailable."
         };
         let dialog = libadwaita::MessageDialog::builder()
             .transient_for(&parent)
             .destroy_with_parent(true)
-            .heading("Não foi possível reproduzir esta faixa")
+            .heading("Unable to play this track")
             .body(format!("{}\n\n{reason}", metadata.title))
             .build();
         dialog.set_widget_name("playback-error");
         dialog.add_css_class("playback-error");
         dialog.set_tooltip_text(Some(details));
-        dialog.add_response("close", "Fechar");
-        dialog.add_response("skip", "Pular faixa");
-        dialog.add_response("retry", "Tentar novamente");
+        dialog.add_response("close", "Close");
+        dialog.add_response("skip", "Skip track");
+        dialog.add_response("retry", "Try again");
         dialog.set_close_response("close");
         dialog.set_response_appearance("retry", libadwaita::ResponseAppearance::Suggested);
         let presenter = self.clone();
