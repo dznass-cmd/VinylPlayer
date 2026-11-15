@@ -124,6 +124,7 @@ struct TurntableCache {
 }
 
 mod audio;
+mod donate;
 mod file_open;
 mod library;
 mod library_settings;
@@ -509,6 +510,23 @@ fn build_ui_with_catalog(
         }
     });
     window.add_action(&library_action);
+
+    let donate_action = gtk::gio::SimpleAction::new("donate", None);
+    let weak_window_donate = window.downgrade();
+    let donate_window_ref = Rc::new(RefCell::new(glib::WeakRef::<gtk::Window>::new()));
+    donate_action.connect_activate(move |_, _| {
+        if let Some(win) = donate_window_ref.borrow().upgrade() {
+            win.present();
+            return;
+        }
+        if let Some(parent) = weak_window_donate.upgrade() {
+            let donate_win = donate::donate_window(parent.upcast_ref());
+            donate_window_ref.borrow_mut().set(Some(&donate_win));
+            donate_win.present();
+        }
+    });
+    window.add_action(&donate_action);
+    app.set_accels_for_action("win.donate", &["<Control><Shift>d"]);
     app.set_accels_for_action("win.toggle-queue", &["<Control>j"]);
     let bus_watch = RefCell::new(Some(bus_watch));
     let state_close = state_mgr.clone();
@@ -648,6 +666,13 @@ fn sidebar() -> (gtk::Widget, Vec<(gtk::Button, &'static str, &'static str)>) {
     audio_pill.append(&pipe_lbl);
     audio_pill.append(&sample_lbl);
     side.append(&audio_pill);
+
+    let donate = labeled_icon_button("emblem-favorite-symbolic", "Donate");
+    donate.add_css_class("nav-button");
+    donate.add_css_class("donate-nav-button");
+    donate.set_action_name(Some("win.donate"));
+    donate.set_tooltip_text(Some("Support VinylPlayer (Ctrl+Shift+D)"));
+    side.append(&donate);
 
     let settings = labeled_icon_button("preferences-system-symbolic", "Settings");
     settings.add_css_class("nav-button");
@@ -5870,7 +5895,55 @@ fn install_css() {
         .folder-button { background: #232629; border: 1px solid #3a3e43; border-radius: 8px; padding: 8px 12px; }
         .folder-button:hover { background: #303438; border-color: #9e825c; }
         .library-settings .queue-error { margin: 0; font-size: 11px; }
-        .queue-toggle { background: #242629; border: 1px solid #393c40; border-radius: 9px; padding: 9px 13px; }
+        .donate-dialog { background: #141516; }
+        .donate-card {
+            background: #1b1d1f; border: 1px solid #303337;
+            border-radius: 12px; padding: 14px 16px; margin-bottom: 4px;
+        }
+        .donate-card-title { font-size: 14px; font-weight: 700; color: #f0ede6; }
+        .donate-card-sub { font-size: 10px; color: #8a8d93; font-family: monospace; }
+        .donate-desc { font-size: 11px; color: #a0a4ab; line-height: 1.4; }
+        .donate-goal-num { font-size: 15px; font-weight: 800; color: #dfc08d; }
+        .donate-progress trough { background: #282a2e; border-radius: 999px; min-height: 6px; }
+        .donate-progress progress { background: #dfc08d; border-radius: 999px; }
+        .donate-badge-bep20 {
+            background: rgba(243, 186, 47, 0.14); border: 1px solid rgba(243, 186, 47, 0.35);
+            color: #f3ba2f; border-radius: 999px; padding: 3px 9px; font-size: 9px; font-weight: 700;
+        }
+        .donate-wallet-box {
+            background: #131416; border: 1px solid #282a2d;
+            border-radius: 10px; padding: 12px;
+        }
+        .donate-coin-title { font-size: 12px; font-weight: 700; color: #f0ede6; }
+        .donate-addr-entry {
+            background: #1a1b1d; border: 1px solid #32353a; border-radius: 8px;
+            font-family: monospace; font-size: 11px; color: #dfc08d; padding: 4px 8px;
+        }
+        .donate-copy-btn {
+            background: rgba(223, 192, 141, 0.16); border: 1px solid rgba(223, 192, 141, 0.38);
+            color: #dfc08d; border-radius: 8px; padding: 6px 14px; font-weight: 700; font-size: 11px;
+        }
+        .donate-copy-btn:hover { background: rgba(223, 192, 141, 0.28); color: #f4d8aa; }
+        .donate-qr-frame {
+            border: 2px solid #dfc08d; border-radius: 8px; background: white; padding: 6px;
+        }
+        .donate-hint { font-size: 10px; color: #82868d; font-family: monospace; }
+        .donate-github-btn {
+            background: #131416; border: 1px solid #282a2d; border-radius: 10px;
+            padding: 10px 12px; transition: border-color 140ms ease;
+        }
+        .donate-github-btn:hover { border-color: #dfc08d; background: #1a1c1e; }
+        .donate-supporter-pill {
+            background: rgba(223, 192, 141, 0.16); border: 1px solid rgba(223, 192, 141, 0.38);
+            color: #dfc08d; border-radius: 999px; padding: 5px 12px; font-size: 10px; font-weight: 700;
+        }
+        .donate-nav-button {
+            color: #dfc08d;
+        }
+        .donate-nav-button:hover {
+            background: rgba(223, 192, 141, 0.12); color: #f4d8aa;
+        }
+        .queue-toggle { background: #242629; border: 1px solid #393c40; border-radius: 999px; padding: 9px 13px; }
         .queue-toggle:checked { background: #302b24; border-color: #8b7352; }
         .queue-toggle label, .queue-toggle image { color: #dfc08d; }
         .queue-panel { background: #1b1d1f; border-left: 1px solid #383a3e; }
