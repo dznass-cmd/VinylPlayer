@@ -139,6 +139,7 @@ mod state;
 mod needle_drop;
 mod playlist;
 mod playlist_view;
+mod thumb_cache;
 use audio::{AudioEngine, PlaybackState, RepeatMode};
 use gstreamer::prelude::ElementExt;
 
@@ -1299,8 +1300,7 @@ fn album_grid(
                     let Some(path) = audio::find_cover(&source) else {
                         continue;
                     };
-                    let Ok(image) = gdk_pixbuf::Pixbuf::from_file_at_scale(path, 640, 640, true)
-                    else {
+                    let Some(image) = thumb_cache::load_cached_thumbnail(&path, 256) else {
                         continue;
                     };
                     let thumbnail = (
@@ -2211,7 +2211,7 @@ fn main_stage(
             let mut state = tick_cache.borrow_mut();
             if current_key != state.cover.key {
                 let pb = if let Some(ref p) = m.cover_path {
-                    gdk_pixbuf::Pixbuf::from_file(p).ok()
+                    thumb_cache::load_cached_thumbnail(p, 512)
                 } else if let Some(ref b) = m.cover_bytes {
                     let loader = gdk_pixbuf::PixbufLoader::new();
                     if loader.write(b).is_ok() && loader.close().is_ok() {
