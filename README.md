@@ -73,6 +73,15 @@ Crafted with **Rust**, **GTK4 / Libadwaita**, and **GStreamer / PipeWire**.
 
 ---
 
+### 📻 Native Last.fm Scrobbler
+- **Audioscrobbler 2.0 API:** Cryptographically signed (`MD5` parameter hashing) scrobbling and real-time *Now Playing* status.
+- **Web Authentication Flow:** One-click OAuth-like token handshake opening the browser for seamless authorization.
+- **Audioscrobbler Compliance:** Follows official submission guidelines (50% playback or 4 minutes threshold, minimum 30s duration).
+- **Zero Audio Hiccup:** Threaded non-blocking HTTP dispatch without audio buffer underruns or GTK main loop freezes.
+- **Custom Credentials Support:** Embedded open-ecosystem fallback credentials plus customizable API key & secret support.
+
+---
+
 ## 🛠️ Installation & Building
 
 ### Dependencies (Arch Linux / Manjaro)

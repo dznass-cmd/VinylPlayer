@@ -1,6 +1,25 @@
 # Alterações do VinylPlayer
 
-Registro atualizado em 14/11/2026.
+Registro atualizado em 15/11/2026.
+
+## Native Last.fm Scrobbler Integration — 15/11/2026
+
+- **Audioscrobbler 2.0 API Implementation (`src/scrobbler.rs`):**
+  - Cryptographic MD5 parameter signing (`sign_params`) matching the Audioscrobbler 2.0 specifications (sorting keys, concatenating key-value pairs, appending shared secret, computing 32-char hex lowercase hash).
+  - Web authentication token handshake: `auth.getToken` requesting temporary token and opening the browser via `authorization_url`.
+  - Permanent session key retrieval: `auth.getSession` extracting user session key (`sk`) and username.
+  - Real-time status update: `track.updateNowPlaying` sending current track, artist, album, and duration.
+  - Automatic track scrobbling: `track.scrobble` with timestamp when playback reaches at least 50% or 4 minutes (240s) on tracks >= 30 seconds.
+- **Asynchronous & Non-Blocking Network Pipeline:**
+  - Lightweight HTTP client (`ureq 3.5` + `md-5 0.11` + `hex 0.4`) running all web requests on dedicated background threads without blocking GTK UI rendering or GStreamer audio decoding.
+- **Settings UI (`src/library_settings.rs`):**
+  - Added dedicated "Last.fm Scrobbler" group in the Settings window.
+  - Status display ("Connected as: [Username]" or "Not connected to Last.fm").
+  - One-click "Connect to Last.fm" / "Complete Connection" / "Disconnect" action buttons.
+  - Optional collapsible "Custom API Credentials" section for custom API keys and shared secrets.
+- **State & Preferences Persistence (`src/state.rs`):**
+  - Persisting `lastfm_enabled`, `lastfm_session_key`, `lastfm_username`, `lastfm_api_key`, `lastfm_api_secret` in `~/.config/vinylplayer/state.json`.
+- **Testing:** 84 unit tests passing cleanly.
 
 ## Refinamento e Correção Visual das Playlists — 14/11/2026
 

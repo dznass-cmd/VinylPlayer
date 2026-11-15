@@ -140,6 +140,7 @@ mod needle_drop;
 mod playlist;
 mod playlist_view;
 mod thumb_cache;
+mod scrobbler;
 use audio::{AudioEngine, PlaybackState, RepeatMode};
 use gstreamer::prelude::ElementExt;
 
@@ -5730,6 +5731,19 @@ fn player_bar(
     let weak_bar = bar.downgrade();
     let errors = errors.clone();
 
+    #[derive(Default)]
+    struct ActiveScrobble {
+        uri: String,
+        artist: String,
+        title: String,
+        album: String,
+        duration_sec: u64,
+        start_ts: u64,
+        now_playing_sent: bool,
+        scrobbled: bool,
+    }
+    let current_scrobble = Rc::new(RefCell::new(ActiveScrobble::default()));
+
     glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
         if weak_bar.upgrade().is_none_or(|bar| !bar.is_realized()) {
             return glib::ControlFlow::Break;
@@ -5856,6 +5870,123 @@ fn player_bar(
         }
         tick_elapsed.set_text(&format_time(p));
         tick_total.set_text(&format_time(d));
+
+        // Integração Last.fm: updateNowPlaying e Scrobble automático
+        let lfm_snap = tick_state.snapshot();
+        if lfm_snap.lastfm_enabled && lfm_snap.is_lastfm_authenticated() {
+            let is_playing = state == PlaybackState::Playing;
+            if is_playing && !uri.is_empty() {
+                let mut cs = current_scrobble.borrow_mut();
+                if cs.uri != uri {
+                    let m = tick_audio.metadata();
+                    let now_ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let dur = (d.max(0) / 1_000_000) as u64;
+                    *cs = ActiveScrobble {
+                        uri: uri.clone(),
+                        artist: m.artist,
+                        title: m.title,
+                        album: m.album,
+                        duration_sec: dur,
+                        start_ts: now_ts,
+                        now_playing_sent: false,
+                        scrobbled: false,
+                    };
+                }
+
+                if cs.artist.is_empty() || cs.title.is_empty() {
+                    let m = tick_audio.metadata();
+                    if !m.artist.is_empty() {
+                        cs.artist = m.artist;
+                    }
+                    if !m.title.is_empty() {
+                        cs.title = m.title;
+                    }
+                    if !m.album.is_empty() {
+                        cs.album = m.album;
+                    }
+                }
+                if cs.duration_sec == 0 && d > 0 {
+                    cs.duration_sec = (d / 1_000_000) as u64;
+                }
+
+                // 1. Envia updateNowPlaying
+                if !cs.now_playing_sent && !cs.title.is_empty() && !cs.artist.is_empty() {
+                    cs.now_playing_sent = true;
+                    let api_key = lfm_snap.lastfm_api_key().to_string();
+                    let api_secret = lfm_snap.lastfm_api_secret().to_string();
+                    let sk = lfm_snap.lastfm_session_key.clone().unwrap_or_default();
+                    let artist = cs.artist.clone();
+                    let track = cs.title.clone();
+                    let album = if cs.album.is_empty() { None } else { Some(cs.album.clone()) };
+                    let dur = cs.duration_sec;
+
+                    std::thread::Builder::new()
+                        .name("lastfm-now-playing".into())
+                        .spawn(move || {
+                            if let Err(e) = crate::scrobbler::update_now_playing(
+                                &api_key,
+                                &api_secret,
+                                &sk,
+                                &artist,
+                                &track,
+                                album.as_deref(),
+                                Some(dur),
+                            ) {
+                                eprintln!("[Last.fm] updateNowPlaying error: {e}");
+                            }
+                        })
+                        .ok();
+                }
+
+                // 2. Scrobble: faixa >= 30s e decorrido >= min(duration / 2, 240s)
+                let pos_sec = (p.max(0) / 1_000_000) as u64;
+                let dur_sec = cs.duration_sec;
+                let min_play = (dur_sec / 2).min(240);
+
+                if !cs.scrobbled
+                    && dur_sec >= 30
+                    && pos_sec >= min_play
+                    && !cs.title.is_empty()
+                    && !cs.artist.is_empty()
+                {
+                    cs.scrobbled = true;
+                    let api_key = lfm_snap.lastfm_api_key().to_string();
+                    let api_secret = lfm_snap.lastfm_api_secret().to_string();
+                    let sk = lfm_snap.lastfm_session_key.clone().unwrap_or_default();
+                    let artist = cs.artist.clone();
+                    let track = cs.title.clone();
+                    let album = if cs.album.is_empty() { None } else { Some(cs.album.clone()) };
+                    let ts = cs.start_ts;
+                    let dur = cs.duration_sec;
+
+                    std::thread::Builder::new()
+                        .name("lastfm-scrobbler".into())
+                        .spawn(move || {
+                            if let Err(e) = crate::scrobbler::scrobble_track(
+                                &api_key,
+                                &api_secret,
+                                &sk,
+                                &artist,
+                                &track,
+                                album.as_deref(),
+                                ts,
+                                Some(dur),
+                            ) {
+                                eprintln!("[Last.fm] Scrobble error: {e}");
+                            }
+                        })
+                        .ok();
+                }
+            } else if state == PlaybackState::Stopped {
+                let mut cs = current_scrobble.borrow_mut();
+                if !cs.uri.is_empty() {
+                    *cs = ActiveScrobble::default();
+                }
+            }
+        }
 
         glib::ControlFlow::Continue
     });

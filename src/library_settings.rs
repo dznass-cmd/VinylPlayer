@@ -123,11 +123,11 @@ impl Catalog {
 
 pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Window {
     let window = gtk::Window::builder()
-        .title("Library Folders")
+        .title("Settings & Library Folders")
         .transient_for(parent)
         .destroy_with_parent(true)
-        .default_width(580)
-        .default_height(470)
+        .default_width(620)
+        .default_height(580)
         .build();
     let body = gtk::Box::new(gtk::Orientation::Vertical, 14);
     window.add_css_class("library-settings");
@@ -179,7 +179,9 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     let empty = gtk::Label::new(Some("No folders added."));
     list.set_placeholder(Some(&empty));
     let scroll = gtk::ScrolledWindow::builder()
-        .vexpand(true)
+        .vexpand(false)
+        .min_content_height(100)
+        .max_content_height(140)
         .hscrollbar_policy(gtk::PolicyType::Never)
         .child(&list)
         .build();
@@ -213,6 +215,196 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     analog_box.append(&chk_light);
 
     body.append(&analog_box);
+
+    // Seção Last.fm Scrobbler nativo
+    let lastfm_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    lastfm_box.set_margin_top(10);
+    lastfm_box.set_margin_bottom(6);
+
+    let lastfm_title = gtk::Label::new(Some("Last.fm Scrobbler"));
+    lastfm_title.add_css_class("system-audio-title");
+    lastfm_title.set_xalign(0.0);
+    lastfm_box.append(&lastfm_title);
+
+    let chk_lastfm = gtk::CheckButton::with_label("Scrobble tracks and update Now Playing on Last.fm");
+    chk_lastfm.set_active(catalog.state.snapshot().lastfm_enabled);
+    let state_lfm = catalog.state.clone();
+    chk_lastfm.connect_toggled(move |btn| {
+        state_lfm.update_lastfm_enabled(btn.is_active());
+        state_lfm.flush_if_dirty();
+    });
+    lastfm_box.append(&chk_lastfm);
+
+    let lfm_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    lfm_row.set_margin_top(4);
+    let lfm_status_lbl = gtk::Label::new(None);
+    lfm_status_lbl.set_xalign(0.0);
+    lfm_status_lbl.set_hexpand(true);
+    lfm_status_lbl.add_css_class("folder-path");
+    let lfm_btn = gtk::Button::new();
+    lfm_btn.set_valign(gtk::Align::Center);
+    lfm_row.append(&lfm_status_lbl);
+    lfm_row.append(&lfm_btn);
+    lastfm_box.append(&lfm_row);
+
+    let pending_token: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    let update_lfm_view = {
+        let state = catalog.state.clone();
+        let status_lbl = lfm_status_lbl.clone();
+        let btn = lfm_btn.clone();
+        let token_cell = pending_token.clone();
+        Rc::new(move || {
+            let snap = state.snapshot();
+            if let Some(user) = snap.lastfm_username.as_deref() {
+                status_lbl.set_text(&format!("Connected as: {user}"));
+                btn.set_label("Disconnect");
+                btn.remove_css_class("open-button");
+                btn.add_css_class("folder-button");
+                *token_cell.borrow_mut() = None;
+            } else if token_cell.borrow().is_some() {
+                status_lbl.set_text("Awaiting authorization in browser…");
+                btn.set_label("Complete Connection");
+                btn.remove_css_class("folder-button");
+                btn.add_css_class("open-button");
+            } else {
+                status_lbl.set_text("Not connected to Last.fm");
+                btn.set_label("Connect to Last.fm");
+                btn.remove_css_class("folder-button");
+                btn.add_css_class("open-button");
+            }
+        })
+    };
+    (update_lfm_view)();
+
+    let weak_w = window.downgrade();
+    let btn_state = catalog.state.clone();
+    let btn_token = pending_token.clone();
+    let btn_update = update_lfm_view.clone();
+    let btn_status = lfm_status_lbl.clone();
+    let btn_action = lfm_btn.clone();
+
+    lfm_btn.connect_clicked(move |_| {
+        let snap = btn_state.snapshot();
+        if snap.is_lastfm_authenticated() {
+            btn_state.update_lastfm_credentials(None, None);
+            btn_state.flush_if_dirty();
+            btn_update();
+            return;
+        }
+
+        if let Some(token) = btn_token.borrow().clone() {
+            btn_status.set_text("Verifying authorization…");
+            btn_action.set_sensitive(false);
+            let api_key = snap.lastfm_api_key().to_string();
+            let api_secret = snap.lastfm_api_secret().to_string();
+            let state_cb = btn_state.clone();
+            let update_cb = btn_update.clone();
+            let status_cb = btn_status.clone();
+            let btn_cb = btn_action.clone();
+            let token_cb = btn_token.clone();
+
+            glib::MainContext::default().spawn_local(async move {
+                let res = gtk::gio::spawn_blocking(move || {
+                    crate::scrobbler::fetch_session(&api_key, &api_secret, &token)
+                })
+                .await;
+                btn_cb.set_sensitive(true);
+                match res {
+                    Ok(Ok((sk, user))) => {
+                        state_cb.update_lastfm_credentials(Some(sk), Some(user));
+                        state_cb.flush_if_dirty();
+                        *token_cb.borrow_mut() = None;
+                        update_cb();
+                    }
+                    Ok(Err(err)) => {
+                        status_cb.set_text(&format!("Authorization pending: {err}"));
+                    }
+                    Err(_) => {
+                        status_cb.set_text("Network thread error.");
+                    }
+                }
+            });
+        } else {
+            btn_status.set_text("Requesting Last.fm authorization token…");
+            btn_action.set_sensitive(false);
+            let api_key = snap.lastfm_api_key().to_string();
+            let update_cb = btn_update.clone();
+            let status_cb = btn_status.clone();
+            let btn_cb = btn_action.clone();
+            let token_cb = btn_token.clone();
+            let weak_w_clone = weak_w.clone();
+
+            glib::MainContext::default().spawn_local(async move {
+                let key_call = api_key.clone();
+                let res = gtk::gio::spawn_blocking(move || {
+                    crate::scrobbler::request_token(&key_call)
+                })
+                .await;
+                btn_cb.set_sensitive(true);
+                match res {
+                    Ok(Ok(token)) => {
+                        let auth_url = crate::scrobbler::authorization_url(&api_key, &token);
+                        if let Some(win) = weak_w_clone.upgrade() {
+                            let _ = gtk::show_uri(Some(&win), &auth_url, gtk::gdk::CURRENT_TIME);
+                        } else {
+                            let _ = gtk::show_uri(None::<&gtk::Window>, &auth_url, gtk::gdk::CURRENT_TIME);
+                        }
+                        *token_cb.borrow_mut() = Some(token);
+                        update_cb();
+                    }
+                    Ok(Err(err)) => {
+                        status_cb.set_text(&format!("Connection error: {err}"));
+                    }
+                    Err(_) => {
+                        status_cb.set_text("Network thread error.");
+                    }
+                }
+            });
+        }
+    });
+
+    let api_expander = gtk::Expander::new(Some("Custom API Credentials (Optional)"));
+    api_expander.set_margin_top(4);
+    let api_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    api_box.set_margin_top(4);
+    api_box.set_margin_bottom(4);
+
+    let key_entry = gtk::Entry::new();
+    key_entry.set_placeholder_text(Some("Custom Last.fm API Key (leave empty for default)"));
+    if let Some(k) = catalog.state.snapshot().lastfm_api_key.as_deref() {
+        key_entry.set_text(k);
+    }
+    api_box.append(&key_entry);
+
+    let sec_entry = gtk::PasswordEntry::new();
+    sec_entry.set_placeholder_text(Some("Custom Shared Secret (leave empty for default)"));
+    if let Some(s) = catalog.state.snapshot().lastfm_api_secret.as_deref() {
+        sec_entry.set_text(s);
+    }
+    api_box.append(&sec_entry);
+
+    let save_api_btn = gtk::Button::with_label("Save API Keys");
+    save_api_btn.add_css_class("folder-button");
+    save_api_btn.set_halign(gtk::Align::Start);
+
+    let key_entry_clone = key_entry.clone();
+    let sec_entry_clone = sec_entry.clone();
+    let state_custom = catalog.state.clone();
+    let update_lfm_after_keys = update_lfm_view.clone();
+    save_api_btn.connect_clicked(move |_| {
+        let k = key_entry_clone.text().trim().to_string();
+        let s = sec_entry_clone.text().trim().to_string();
+        let opt_k = if k.is_empty() { None } else { Some(k) };
+        let opt_s = if s.is_empty() { None } else { Some(s) };
+        state_custom.update_lastfm_custom_api(opt_k, opt_s);
+        state_custom.flush_if_dirty();
+        update_lfm_after_keys();
+    });
+    api_box.append(&save_api_btn);
+    api_expander.set_child(Some(&api_box));
+    lastfm_box.append(&api_expander);
+
+    body.append(&lastfm_box);
 
     let warnings = gtk::Label::new(None);
     warnings.set_wrap(true);

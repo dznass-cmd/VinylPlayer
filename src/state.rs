@@ -88,6 +88,16 @@ pub struct AppState {
     pub target_light: bool,
     /// Controle fino de pitch analógico (±8%). Padrão: 0.0.
     pub pitch: f64,
+    /// Integração nativa com Last.fm Scrobbler ativa. Padrão: true.
+    pub lastfm_enabled: bool,
+    /// Chave de sessão permanente da Last.fm (sk).
+    pub lastfm_session_key: Option<String>,
+    /// Nome de usuário da Last.fm autenticado.
+    pub lastfm_username: Option<String>,
+    /// Chave de API personalizada da Last.fm (None usa a padrão embutida).
+    pub lastfm_api_key: Option<String>,
+    /// Shared secret personalizado da Last.fm (None usa o padrão embutido).
+    pub lastfm_api_secret: Option<String>,
 }
 
 impl Default for AppState {
@@ -106,6 +116,11 @@ impl Default for AppState {
             needle_drop: true,
             target_light: true,
             pitch: 0.0,
+            lastfm_enabled: true,
+            lastfm_session_key: None,
+            lastfm_username: None,
+            lastfm_api_key: None,
+            lastfm_api_secret: None,
         }
     }
 }
@@ -115,6 +130,24 @@ impl AppState {
         self.library_folders
             .clone()
             .unwrap_or_else(|| vec![PathBuf::from("/mnt/armazenamento/music")])
+    }
+
+    pub fn lastfm_api_key(&self) -> &str {
+        self.lastfm_api_key
+            .as_deref()
+            .unwrap_or(crate::scrobbler::DEFAULT_API_KEY)
+    }
+
+    pub fn lastfm_api_secret(&self) -> &str {
+        self.lastfm_api_secret
+            .as_deref()
+            .unwrap_or(crate::scrobbler::DEFAULT_API_SECRET)
+    }
+
+    pub fn is_lastfm_authenticated(&self) -> bool {
+        self.lastfm_session_key
+            .as_ref()
+            .is_some_and(|k| !k.is_empty())
     }
 
     /// Serializa o estado para formato JSON formatado.
@@ -131,6 +164,11 @@ impl AppState {
             "needle_drop": self.needle_drop,
             "target_light": self.target_light,
             "pitch": self.pitch.clamp(-0.08, 0.08),
+            "lastfm_enabled": self.lastfm_enabled,
+            "lastfm_session_key": self.lastfm_session_key,
+            "lastfm_username": self.lastfm_username,
+            "lastfm_api_key": self.lastfm_api_key,
+            "lastfm_api_secret": self.lastfm_api_secret,
         });
         if let Some(queue) = &self.queue {
             value["queue"] = queue.to_json();
@@ -192,6 +230,25 @@ impl AppState {
         {
             state.pitch = pitch.clamp(-0.08, 0.08);
         }
+        if let Some(lfm) = value.get("lastfm_enabled").and_then(|v| v.as_bool()) {
+            state.lastfm_enabled = lfm;
+        }
+        state.lastfm_session_key = value
+            .get("lastfm_session_key")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        state.lastfm_username = value
+            .get("lastfm_username")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        state.lastfm_api_key = value
+            .get("lastfm_api_key")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        state.lastfm_api_secret = value
+            .get("lastfm_api_secret")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         state.last_track_path = value
             .get("last_track_path")
             .and_then(|v| v.as_str())
@@ -362,6 +419,21 @@ impl StateManager {
         let p = pitch.clamp(-0.08, 0.08);
         self.update(|state| state.pitch = p);
     }
+    pub fn update_lastfm_credentials(&self, session_key: Option<String>, username: Option<String>) {
+        self.update(|state| {
+            state.lastfm_session_key = session_key;
+            state.lastfm_username = username;
+        });
+    }
+    pub fn update_lastfm_enabled(&self, enabled: bool) {
+        self.update(|state| state.lastfm_enabled = enabled);
+    }
+    pub fn update_lastfm_custom_api(&self, api_key: Option<String>, api_secret: Option<String>) {
+        self.update(|state| {
+            state.lastfm_api_key = api_key;
+            state.lastfm_api_secret = api_secret;
+        });
+    }
     pub fn update_queue(&self, snapshot: QueueSnapshot) {
         let queue = SavedQueue {
             tracks: Arc::new(snapshot.tracks),
@@ -528,6 +600,11 @@ mod tests {
         assert!(st.needle_drop);
         assert!(st.target_light);
         assert!((st.pitch - 0.0).abs() < f64::EPSILON);
+        assert!(st.lastfm_enabled);
+        assert_eq!(st.lastfm_session_key, None);
+        assert_eq!(st.lastfm_username, None);
+        assert_eq!(st.lastfm_api_key, None);
+        assert_eq!(st.lastfm_api_secret, None);
     }
 
     #[test]
@@ -546,6 +623,11 @@ mod tests {
             needle_drop: false,
             target_light: true,
             pitch: 0.035,
+            lastfm_enabled: true,
+            lastfm_session_key: Some("test_session_key_123".into()),
+            lastfm_username: Some("vinyl_fan".into()),
+            lastfm_api_key: None,
+            lastfm_api_secret: None,
         };
         let json = st.to_json();
         let restored = AppState::from_json(&json);
@@ -560,6 +642,9 @@ mod tests {
         assert!(!restored.needle_drop);
         assert!(restored.target_light);
         assert!((restored.pitch - 0.035).abs() < 0.0001);
+        assert!(restored.lastfm_enabled);
+        assert_eq!(restored.lastfm_session_key.as_deref(), Some("test_session_key_123"));
+        assert_eq!(restored.lastfm_username.as_deref(), Some("vinyl_fan"));
     }
 
     #[test]
