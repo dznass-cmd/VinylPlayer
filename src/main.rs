@@ -1,57 +1,13 @@
 #![allow(deprecated)]
-use gtk::cairo;
 use gtk::gdk;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow, DrawingArea, Orientation};
 use std::cell::{Cell, RefCell};
-use std::f64::consts::{PI, TAU};
+use std::f64::consts::TAU;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
-
-#[derive(Clone, Debug)]
-struct VolumeHudState {
-    level: f64,
-    alpha: f64,
-    last_active: Option<Instant>,
-}
-
-impl Default for VolumeHudState {
-    fn default() -> Self {
-        Self {
-            level: 0.5,
-            alpha: 0.0,
-            last_active: None,
-        }
-    }
-}
-
-impl VolumeHudState {
-    fn trigger(&mut self, level: f64) {
-        self.level = level.clamp(0.0, 1.0);
-        self.alpha = 1.0;
-        self.last_active = Some(Instant::now());
-    }
-
-    fn tick_fade(&mut self) -> bool {
-        if self.alpha <= 0.0 {
-            return false;
-        }
-        if let Some(active) = self.last_active {
-            let elapsed = active.elapsed().as_secs_f64();
-            if elapsed > 1.8 {
-                self.alpha = 0.0;
-                return true;
-            } else if elapsed > 1.1 {
-                self.alpha = ((1.8 - elapsed) / 0.7).clamp(0.0, 1.0);
-                return true;
-            }
-        }
-        true
-    }
-}
 
 fn show_track_notification(title: &str, artist: &str, album: &str, cover_path: Option<&Path>) {
     let summary = if title.trim().is_empty() {
@@ -111,18 +67,6 @@ pub(crate) fn show_system_notification(summary: &str, body: &str) {
     });
 }
 
-struct CachedCover {
-    key: String,
-    original: Option<gdk_pixbuf::Pixbuf>,
-    surface: Option<(i32, cairo::ImageSurface)>,
-}
-
-struct TurntableCache {
-    bg_surface: Option<(i32, i32, cairo::ImageSurface)>,
-    disc_surface: Option<(f64, i32, u32, cairo::ImageSurface)>,
-    cover: CachedCover,
-}
-
 mod audio;
 mod donate;
 mod file_open;
@@ -141,6 +85,13 @@ mod playlist;
 mod playlist_view;
 mod thumb_cache;
 mod scrobbler;
+mod theme;
+mod turntable;
+mod volume_hud;
+mod vu_meter;
+
+pub(crate) use turntable::{CachedCover, TurntableCache, TurntableLayout, TurntableRenderParams, draw_turntable};
+pub(crate) use volume_hud::VolumeHudState;
 use audio::{AudioEngine, PlaybackState, RepeatMode};
 use gstreamer::prelude::ElementExt;
 
@@ -171,6 +122,8 @@ fn build_ui_with_catalog(
     state_mgr: state::StateManager,
 ) -> (Arc<AudioEngine>, Rc<library_settings::Catalog>) {
     let initial_state = state_mgr.snapshot();
+    let initial_theme = theme::Theme::from_id(initial_state.theme());
+    theme::apply_theme(initial_theme);
 
     let audio = Arc::new(
         match &initial_state.queue {
@@ -285,12 +238,15 @@ fn build_ui_with_catalog(
         ),
         Some("overview"),
     );
+    let catalog = library_settings::Catalog::new(state_mgr.clone());
+    let initial_tracks = catalog.report.borrow().tracks.clone();
+
     stack.add_named(
-        &library_view(&audio, false, &search_hub, &state_mgr, Vec::new()),
+        &library_view(&audio, false, &search_hub, &state_mgr, initial_tracks.clone()),
         Some("tracks"),
     );
     stack.add_named(
-        &library_view(&audio, true, &search_hub, &state_mgr, Vec::new()),
+        &library_view(&audio, true, &search_hub, &state_mgr, initial_tracks.clone()),
         Some("albums"),
     );
     let playlist_mgr = playlist::PlaylistManager::new(None);
@@ -298,8 +254,7 @@ fn build_ui_with_catalog(
         &playlist_view::playlist_library_view(&audio, &playlist_mgr),
         Some("playlists"),
     );
-    let catalog = library_settings::Catalog::new(state_mgr.clone());
-    let library_status = gtk::Label::new(Some("Lendo pastas da biblioteca…"));
+    let library_status = gtk::Label::new(Some(&catalog.summary()));
     library_status.set_xalign(0.0);
     library_status.add_css_class("library-status");
     content.append(&library_status);
@@ -309,6 +264,8 @@ fn build_ui_with_catalog(
     let library_search = search_hub.clone();
     let initialize_queue = Cell::new(initial_state.queue.is_none());
     let seed_revision = audio.queue_status().0;
+    let last_tracks = Rc::new(RefCell::new(initial_tracks));
+    let last_tracks_cb = last_tracks.clone();
     catalog.connect(&stack, move |catalog| {
         if let Some(label) = weak_status.upgrade() {
             label.set_text(&catalog.summary());
@@ -324,6 +281,13 @@ fn build_ui_with_catalog(
         if initialize_queue.replace(false) {
             let _ = library_audio.seed_library_if_unchanged(seed_revision, &report.tracks);
         }
+
+        // Se as faixas não mudaram desde a última carga, NÃO reconstrói as views da UI
+        if *last_tracks_cb.borrow() == report.tracks {
+            return;
+        }
+        *last_tracks_cb.borrow_mut() = report.tracks.clone();
+
         let visible = stack.visible_child_name();
         for (page, albums) in [("tracks", false), ("albums", true)] {
             if let Some(old) = stack.child_by_name(page) {
@@ -477,7 +441,7 @@ fn build_ui_with_catalog(
 
     let window = ApplicationWindow::builder()
         .application(app)
-        .title("VinylPlayer — High-Fidelity Audio")
+        .title(format!("VinylPlayer v{} — High-Fidelity Audio", env!("CARGO_PKG_VERSION")))
         .default_width(1220)
         .default_height(780)
         .child(&root)
@@ -619,8 +583,12 @@ fn sidebar() -> (gtk::Widget, Vec<(gtk::Button, &'static str, &'static str)>) {
     icon_disc.add_css_class("brand-icon");
     let brand = gtk::Label::new(Some("VINYLPLAYER"));
     brand.add_css_class("brand");
+    let version_badge = gtk::Label::new(Some(concat!("v", env!("CARGO_PKG_VERSION"))));
+    version_badge.add_css_class("version-badge");
+    version_badge.set_valign(gtk::Align::Center);
     logo_row.append(&icon_disc);
     logo_row.append(&brand);
+    logo_row.append(&version_badge);
     brand_box.append(&logo_row);
 
     let sub = gtk::Label::new(Some("O RITUAL DE OUVIR"));
@@ -738,28 +706,104 @@ fn library_view(
     empty_box.append(&empty_label);
     list.set_placeholder(Some(&empty_box));
 
-    let track_paths: Rc<Vec<std::path::PathBuf>> = Rc::new(paths);
+    let mut sorted_paths = paths;
+    match initial_track_sort {
+        0 => {
+            sorted_paths.sort_by(|path_a, path_b| {
+                let stem_a = path_a.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                let stem_b = path_b.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                library::natural_cmp(stem_a, stem_b).then_with(|| path_a.cmp(path_b))
+            });
+        }
+        1 => {
+            sorted_paths.sort_by(|path_a, path_b| {
+                let stem_a = path_a.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                let stem_b = path_b.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                library::natural_cmp(stem_b, stem_a).then_with(|| path_b.cmp(path_a))
+            });
+        }
+        _ => {
+            sorted_paths.sort();
+        }
+    }
+
+    let track_paths: Rc<Vec<std::path::PathBuf>> = Rc::new(sorted_paths);
+    let scroll = gtk::ScrolledWindow::new();
+    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroll.set_vexpand(true);
+    scroll.set_margin_top(4);
+    scroll.set_child(Some(&list));
+    scroll.connect_map(|s| {
+        s.vadjustment().set_value(0.0);
+    });
+
     let weak_list_fill = list.downgrade();
+    let weak_scroll_fill = scroll.downgrade();
     let fill_paths = track_paths.clone();
     let fill_audio = audio.clone();
-    glib::MainContext::default().spawn_local(async move {
-        for (idx, path) in fill_paths.iter().enumerate() {
-            let Some(list) = weak_list_fill.upgrade() else {
-                break;
-            };
-            let row = track_row(&fill_audio, path.clone(), false);
-            row.set_widget_name(&idx.to_string());
-            list.append(&row);
-            drop(list);
-            if idx % 24 == 23 {
-                glib::timeout_future_with_priority(
-                    glib::Priority::LOW,
-                    std::time::Duration::from_millis(8),
-                )
-                .await;
+    let populated = Rc::new(std::cell::Cell::new(false));
+
+    let fill_tracks = {
+        let populated = populated.clone();
+        let fill_paths = fill_paths.clone();
+        let fill_audio = fill_audio.clone();
+        let weak_list = weak_list_fill.clone();
+        let weak_scroll = weak_scroll_fill.clone();
+        Rc::new(move || {
+            if populated.get() {
+                return;
             }
+            populated.set(true);
+            let paths = fill_paths.clone();
+            let audio = fill_audio.clone();
+            let weak_list = weak_list.clone();
+            let weak_scroll = weak_scroll.clone();
+            glib::MainContext::default().spawn_local(async move {
+                let chunk_size = 64;
+                for (idx, path) in paths.iter().enumerate() {
+                    let Some(list) = weak_list.upgrade() else {
+                        break;
+                    };
+                    let row = track_row(&audio, path.clone(), false);
+                    row.set_widget_name(&idx.to_string());
+                    list.append(&row);
+                    drop(list);
+                    if idx % chunk_size == chunk_size - 1 {
+                        glib::timeout_future_with_priority(
+                            glib::Priority::LOW,
+                            std::time::Duration::from_millis(2),
+                        )
+                        .await;
+                    }
+                }
+                if let Some(s) = weak_scroll.upgrade() {
+                    s.vadjustment().set_value(0.0);
+                }
+            });
+        })
+    };
+
+    let ft_map = fill_tracks.clone();
+    let weak_scroll_map = scroll.downgrade();
+    outer.connect_map(move |_| {
+        ft_map();
+        if let Some(s) = weak_scroll_map.upgrade() {
+            s.vadjustment().set_value(0.0);
         }
     });
+
+    let ft_search = fill_tracks.clone();
+    let search_tracks_check = search_hub.clone();
+    search_hub.on_query_changed(move || {
+        if !search_tracks_check.query().trim().is_empty() {
+            ft_search();
+        }
+    });
+
+    // Povoa imediatamente se já estiver mapeado ou se a lista for pequena (testes e pastas pequenas)
+    if outer.is_mapped() || track_paths.len() <= 60 {
+        fill_tracks();
+    }
 
     let list_filter_weak = list.downgrade();
     search_hub.on_query_changed(move || {
@@ -826,10 +870,6 @@ fn library_view(
         }
     });
 
-    let scroll = gtk::ScrolledWindow::new();
-    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-    scroll.set_vexpand(true);
-    scroll.set_child(Some(&list));
     outer.append(&scroll);
     outer.upcast()
 }
@@ -966,82 +1006,115 @@ fn populate_album_views(
     let fill_albums = albums_rc.clone();
     let weak_fill_list = list.downgrade();
     let fill_audio = audio.clone();
-    glib::MainContext::default().spawn_local(async move {
-        for (index, album_info) in fill_albums.iter().enumerate() {
-            let Some(list) = weak_fill_list.upgrade() else {
-                break;
-            };
-            let row = gtk::ListBoxRow::new();
-            row.set_widget_name(&index.to_string());
-            row.add_css_class("album-card-row");
-            let box_ = gtk::Box::new(Orientation::Vertical, 6);
-            box_.set_margin_top(12);
-            box_.set_margin_bottom(12);
-            box_.set_margin_start(16);
-            box_.set_margin_end(16);
+    let list_populated = Rc::new(std::cell::Cell::new(false));
 
-            let header_row = gtk::Box::new(Orientation::Horizontal, 12);
-            let album_icon = gtk::Image::from_icon_name("media-optical-symbolic");
-            album_icon.set_pixel_size(24);
-            let year_str = album_info
-                .year
-                .map(|y| format!(" ({y})"))
-                .unwrap_or_default();
-            let subtitle = if album_info.artist != "Artista desconhecido" {
-                format!("{}  ·  {}{}", album_info.artist, album_info.title, year_str)
-            } else {
-                format!("{}{}", album_info.title, year_str)
-            };
-            let label = gtk::Label::new(Some(&format!(
-                "{}  ·  {} faixa(s)",
-                subtitle,
-                album_info.tracks.len()
-            )));
-            label.set_xalign(0.0);
-            label.set_hexpand(true);
-            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            label.add_css_class("album-title-header");
+    let populate_list = {
+        let list_populated = list_populated.clone();
+        Rc::new(move || {
+            if list_populated.get() {
+                return;
+            }
+            list_populated.set(true);
+            let albums = fill_albums.clone();
+            let weak_list = weak_fill_list.clone();
+            let audio = fill_audio.clone();
+            glib::MainContext::default().spawn_local(async move {
+                for (index, album_info) in albums.iter().enumerate() {
+                    let Some(list) = weak_list.upgrade() else {
+                        break;
+                    };
+                    let row = gtk::ListBoxRow::new();
+                    row.set_widget_name(&index.to_string());
+                    row.add_css_class("album-card-row");
+                    let box_ = gtk::Box::new(Orientation::Vertical, 6);
+                    box_.set_margin_top(12);
+                    box_.set_margin_bottom(12);
+                    box_.set_margin_start(16);
+                    box_.set_margin_end(16);
 
-            let tracks = Rc::new(album_info.tracks.clone());
-            let album_queue = tracks.clone();
-            let button = labeled_icon_button("media-playback-start-symbolic", "Ouvir álbum");
-            button.add_css_class("play-album-button");
-            let engine = fill_audio.clone();
-            button.connect_clicked(move |_| {
-                let _ = engine.play_album(&album_queue, 0);
-            });
+                    let header_row = gtk::Box::new(Orientation::Horizontal, 12);
+                    let album_icon = gtk::Image::from_icon_name("media-optical-symbolic");
+                    album_icon.set_pixel_size(24);
+                    let year_str = album_info
+                        .year
+                        .map(|y| format!(" ({y})"))
+                        .unwrap_or_default();
+                    let subtitle = if album_info.artist != "Artista desconhecido" {
+                        format!("{}  ·  {}{}", album_info.artist, album_info.title, year_str)
+                    } else {
+                        format!("{}{}", album_info.title, year_str)
+                    };
+                    let label = gtk::Label::new(Some(&format!(
+                        "{}  ·  {} faixa(s)",
+                        subtitle,
+                        album_info.tracks.len()
+                    )));
+                    label.set_xalign(0.0);
+                    label.set_hexpand(true);
+                    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                    label.add_css_class("album-title-header");
 
-            header_row.append(&album_icon);
-            header_row.append(&label);
-            header_row.append(&button);
-            header_row.append(&queue_actions(&fill_audio, tracks.clone(), true));
-            box_.append(&header_row);
+                    let tracks = Rc::new(album_info.tracks.clone());
+                    let album_queue = tracks.clone();
+                    let button = labeled_icon_button("media-playback-start-symbolic", "Ouvir álbum");
+                    button.add_css_class("play-album-button");
+                    let engine = audio.clone();
+                    button.connect_clicked(move |_| {
+                        let _ = engine.play_album(&album_queue, 0);
+                    });
 
-            row.set_child(Some(&box_));
-            list.append(&row);
-            drop(list);
-            for (track_idx, path) in album_info.tracks.iter().cloned().enumerate() {
-                if weak_fill_list.upgrade().is_none() {
-                    return;
-                }
-                let child =
-                    track_row_in_queue(&fill_audio, path, true, Some((tracks.clone(), track_idx)));
-                box_.append(&child);
-                if track_idx % 24 == 23 {
+                    header_row.append(&album_icon);
+                    header_row.append(&label);
+                    header_row.append(&button);
+                    header_row.append(&queue_actions(&audio, tracks.clone(), true));
+                    box_.append(&header_row);
+
+                    row.set_child(Some(&box_));
+                    list.append(&row);
+                    drop(list);
+                    for (track_idx, path) in album_info.tracks.iter().cloned().enumerate() {
+                        if weak_list.upgrade().is_none() {
+                            return;
+                        }
+                        let child =
+                            track_row_in_queue(&audio, path, true, Some((tracks.clone(), track_idx)));
+                        box_.append(&child);
+                        if track_idx % 32 == 31 {
+                            glib::timeout_future_with_priority(
+                                glib::Priority::LOW,
+                                std::time::Duration::from_millis(4),
+                            )
+                            .await;
+                        }
+                    }
                     glib::timeout_future_with_priority(
                         glib::Priority::LOW,
-                        std::time::Duration::from_millis(8),
+                        std::time::Duration::from_millis(2),
                     )
                     .await;
                 }
-            }
-            glib::timeout_future_with_priority(
-                glib::Priority::LOW,
-                std::time::Duration::from_millis(4),
-            )
-            .await;
+            });
+        })
+    };
+
+    let pl = populate_list.clone();
+    views.connect_visible_child_name_notify(move |v| {
+        if v.visible_child_name().as_deref() == Some("list") {
+            pl();
         }
     });
+
+    let pl_search = populate_list.clone();
+    let search_hub_check = search_hub.clone();
+    search_hub.on_query_changed(move || {
+        if !search_hub_check.query().trim().is_empty() {
+            pl_search();
+        }
+    });
+
+    if views.visible_child_name().as_deref() == Some("list") || albums_rc.len() <= 10 {
+        populate_list();
+    }
 
     let albums_list = albums_rc.clone();
     let mode_list = mode_cell.clone();
@@ -1294,8 +1367,8 @@ fn album_grid(
             }
         }
         if !pictures.is_empty() {
-            // Um único worker decodifica as capas; a UI recebe no máximo duas por rodada.
-            let (sender, receiver) = std::sync::mpsc::sync_channel(4);
+            // Worker descarrega as capas; a UI recebe em lotes rápidos de até 8 capas por tick.
+            let (sender, receiver) = std::sync::mpsc::sync_channel(16);
             std::thread::spawn(move || {
                 for (index, source) in sources.into_iter().enumerate() {
                     let Some(path) = audio::find_cover(&source) else {
@@ -1317,11 +1390,11 @@ fn album_grid(
                     }
                 }
             });
-            glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+            glib::timeout_add_local(std::time::Duration::from_millis(25), move || {
                 if pictures.iter().all(|picture| picture.upgrade().is_none()) {
                     return glib::ControlFlow::Break;
                 }
-                for _ in 0..2 {
+                for _ in 0..8 {
                     match receiver.try_recv() {
                         Ok((index, width, height, stride, alpha, pixels)) => {
                             if let Some(picture) = pictures[index].upgrade() {
@@ -1502,6 +1575,8 @@ fn track_row_in_queue(
     }
     let row = gtk::ListBoxRow::new();
     row.add_css_class("track-row-item");
+    row.set_selectable(false);
+    row.set_activatable(false);
     row.set_child(Some(&actions));
     row.upcast()
 }
@@ -1822,23 +1897,23 @@ fn main_stage(
             (hud.level, hud.alpha)
         };
         let (vu_l, vu_r) = draw_vu.get();
-        draw_turntable(
-            cr,
+        let params = TurntableRenderParams {
             w,
             h,
-            draw_angle.get(),
-            draw_arm.get(),
-            draw_playing.get(),
-            &draw_cache,
-            widget.scale_factor(),
-            draw_rpm.get(),
-            hud_level,
-            hud_alpha,
-            vu_l,
-            vu_r,
-            draw_tl.get(),
-            draw_pitch.get(),
-        );
+            disc_angle: draw_angle.get(),
+            arm_angle: draw_arm.get(),
+            is_playing: draw_playing.get(),
+            cache: &draw_cache,
+            scale: widget.scale_factor(),
+            rpm: draw_rpm.get(),
+            volume_level: hud_level,
+            volume_alpha: hud_alpha,
+            vu_needle_l: vu_l,
+            vu_needle_r: vu_r,
+            target_light_on: draw_tl.get(),
+            pitch: draw_pitch.get(),
+        };
+        draw_turntable(cr, &params);
     });
 
     let updating = Rc::new(Cell::new(false));
@@ -2338,3151 +2413,6 @@ fn main_stage(
     stage.upcast()
 }
 
-struct TurntableLayout {
-    mx: f64,
-    my: f64,
-    dw: f64,
-    dh: f64,
-    cx: f64,
-    cy: f64,
-    r_disc: f64,
-    r_platter: f64,
-    pivot_x: f64,
-    pivot_y: f64,
-    arm_len: f64,
-    led_x: f64,
-    led_y: f64,
-    vu_x: f64,
-    vu_y: f64,
-    vu_w: f64,
-    vu_h: f64,
-    target_light_x: f64,
-    target_light_y: f64,
-    target_light_r: f64,
-    strobe_x: f64,
-    strobe_y: f64,
-    pitch_x: f64,
-    pitch_y: f64,
-    pitch_w: f64,
-    pitch_h: f64,
-}
-
-impl TurntableLayout {
-    fn compute(w: f64, h: f64) -> Self {
-        let margin = 14.0;
-        let max_w = (w - 2.0 * margin).max(200.0);
-        let max_h = (h - 2.0 * margin).max(200.0);
-        let aspect = 1.34_f64;
-        let dh = max_h.min(max_w / aspect);
-        let dw = dh * aspect;
-        let mx = (w - dw) / 2.0;
-        let my = (h - dh) / 2.0;
-
-        let cx = mx + dw * 0.46;
-        let cy = my + dh * 0.50;
-        let r_disc = dh * 0.445;
-        let r_platter = r_disc + 7.5;
-
-        let pivot_x = mx + dw * 0.855;
-        let pivot_y = my + dh * 0.17;
-        let arm_len = dh * 0.515;
-
-        let led_x = mx + 26.0;
-        let led_y = my + dh - 26.0;
-
-        let vu_w = 96.0;
-        let vu_h = 35.0;
-        let vu_x = mx + dw - vu_w - 10.0;
-        let vu_y = my + dh - vu_h - 10.0;
-
-        let target_light_x = mx + 38.0;
-        let target_light_y = my + dh * 0.74;
-        let target_light_r = 11.0;
-
-        let strobe_x = mx + 20.0;
-        let strobe_y = my + dh * 0.38;
-
-        let pitch_w = 26.0;
-        let pitch_h = (dh * 0.38).clamp(100.0, 160.0);
-        let pitch_x = mx + dw - pitch_w - 22.0;
-        let pitch_y = my + dh * 0.35;
-
-        Self {
-            mx,
-            my,
-            dw,
-            dh,
-            cx,
-            cy,
-            r_disc,
-            r_platter,
-            pivot_x,
-            pivot_y,
-            arm_len,
-            led_x,
-            led_y,
-            vu_x,
-            vu_y,
-            vu_w,
-            vu_h,
-            target_light_x,
-            target_light_y,
-            target_light_r,
-            strobe_x,
-            strobe_y,
-            pitch_x,
-            pitch_y,
-            pitch_w,
-            pitch_h,
-        }
-    }
-}
-
-fn render_background(layout: &TurntableLayout, w: i32, h: i32) -> Option<cairo::ImageSurface> {
-    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h).ok()?;
-    let cr = cairo::Context::new(&surface).ok()?;
-
-    let mx = layout.mx;
-    let my = layout.my;
-    let dw = layout.dw;
-    let dh = layout.dh;
-    let corner_r = 16.0;
-
-    // Sombra suave sob o chassi
-    cr.set_source_rgba(0.0, 0.0, 0.0, 0.45);
-    draw_rounded_rect(&cr, mx + 3.0, my + 5.0, dw, dh, corner_r);
-    cr.fill().ok();
-
-    // Base de alumínio escovado escuro (chassi)
-    let deck_grad = cairo::LinearGradient::new(mx, my, mx + dw, my + dh);
-    deck_grad.add_color_stop_rgba(0.0, 0.12, 0.125, 0.135, 1.0);
-    deck_grad.add_color_stop_rgba(0.5, 0.09, 0.095, 0.105, 1.0);
-    deck_grad.add_color_stop_rgba(1.0, 0.055, 0.06, 0.065, 1.0);
-    cr.set_source(&deck_grad).ok();
-    draw_rounded_rect(&cr, mx, my, dw, dh, corner_r);
-    cr.fill().ok();
-
-    // Borda metálica fina do chassi
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.08);
-    cr.set_line_width(1.5);
-    draw_rounded_rect(&cr, mx, my, dw, dh, corner_r);
-    cr.stroke().ok();
-
-    // Painel usinado e textura sutil: tudo permanece no cache do fundo.
-    cr.save().ok();
-    draw_rounded_rect(&cr, mx + 8.0, my + 8.0, dw - 16.0, dh - 16.0, 11.0);
-    cr.clip();
-    cr.set_line_width(0.5);
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.018);
-    for y in (0..dh as i32).step_by(4) {
-        cr.move_to(mx, my + y as f64);
-        cr.line_to(mx + dw, my + y as f64);
-    }
-    cr.stroke().ok();
-    cr.restore().ok();
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.055);
-    cr.set_line_width(0.8);
-    draw_rounded_rect(&cr, mx + 7.0, my + 7.0, dw - 14.0, dh - 14.0, 11.0);
-    cr.stroke().ok();
-
-    // Parafusos metálicos hexagonais nos 4 cantos do chassi
-    let bolt_inset = 22.0;
-    let bolts = [
-        (mx + bolt_inset, my + bolt_inset),
-        (mx + dw - bolt_inset, my + bolt_inset),
-        (mx + bolt_inset, my + dh - bolt_inset),
-        (mx + dw - bolt_inset, my + dh - bolt_inset),
-    ];
-    for (bx, by) in bolts {
-        cr.set_source_rgba(0.04, 0.03, 0.05, 0.8);
-        cr.arc(bx, by, 4.5, 0.0, TAU);
-        cr.fill().ok();
-
-        cr.set_source_rgba(0.45, 0.42, 0.50, 0.9);
-        cr.arc(bx, by, 3.5, 0.0, TAU);
-        cr.fill().ok();
-
-        cr.set_source_rgba(0.1, 0.1, 0.12, 0.9);
-        cr.move_to(bx - 2.0, by);
-        cr.line_to(bx + 2.0, by);
-        cr.move_to(bx, by - 2.0);
-        cr.line_to(bx, by + 2.0);
-        cr.set_line_width(0.9);
-        cr.stroke().ok();
-    }
-
-    // 2. Prato do Toca-Discos (Platter)
-    let cx = layout.cx;
-    let cy = layout.cy;
-    let r_disc = layout.r_disc;
-    let r_platter = layout.r_platter;
-
-    // Poço rebaixado do prato (sombra circular)
-    let well_shadow = cairo::RadialGradient::new(cx, cy, r_platter, cx, cy, r_platter + 8.0);
-    well_shadow.add_color_stop_rgba(0.0, 0.0, 0.0, 0.0, 0.6);
-    well_shadow.add_color_stop_rgba(1.0, 0.0, 0.0, 0.0, 0.0);
-    cr.set_source(&well_shadow).ok();
-    cr.arc(cx, cy, r_platter + 8.0, 0.0, TAU);
-    cr.fill().ok();
-
-    // Aro de alumínio maciço usinado (platter rim) com frisos chanfrados
-    let platter_grad = cairo::LinearGradient::new(cx - r_platter, cy, cx + r_platter, cy);
-    platter_grad.add_color_stop_rgba(0.0, 0.28, 0.29, 0.30, 1.0);
-    platter_grad.add_color_stop_rgba(0.3, 0.63, 0.63, 0.61, 1.0);
-    platter_grad.add_color_stop_rgba(0.7, 0.22, 0.23, 0.24, 1.0);
-    platter_grad.add_color_stop_rgba(1.0, 0.43, 0.44, 0.44, 1.0);
-    cr.set_source(&platter_grad).ok();
-    cr.arc(cx, cy, r_platter, 0.0, TAU);
-    cr.fill().ok();
-
-    // Ranhuras circulares usinadas no aro do prato
-    cr.set_source_rgba(0.12, 0.12, 0.14, 0.55);
-    cr.set_line_width(0.7);
-    cr.arc(cx, cy, r_platter - 2.5, 0.0, TAU);
-    cr.stroke().ok();
-    cr.arc(cx, cy, r_platter - 5.5, 0.0, TAU);
-    cr.stroke().ok();
-
-    // Tapete antiderrapante (Slipmat)
-    cr.set_source_rgb(0.08, 0.07, 0.09);
-    cr.arc(cx, cy, r_disc + 2.0, 0.0, TAU);
-    cr.fill().ok();
-
-    // Base dos indicadores e botões de velocidade 33 ⅓ e 45 RPM
-    let led_x = layout.led_x;
-    let led_y = layout.led_y;
-    let led45_x = led_x + 50.0;
-
-    for &lx in &[led_x, led45_x] {
-        cr.set_source_rgba(0.04, 0.04, 0.05, 0.9);
-        cr.arc(lx, led_y, 6.0, 0.0, TAU);
-        cr.fill().ok();
-        cr.set_source_rgba(1.0, 1.0, 1.0, 0.06);
-        cr.set_line_width(0.8);
-        cr.arc(lx, led_y, 6.0, 0.0, TAU);
-        cr.stroke().ok();
-    }
-
-    cr.select_font_face(
-        "Cantarell, Sans",
-        cairo::FontSlant::Normal,
-        cairo::FontWeight::Bold,
-    );
-    cr.set_font_size(9.5);
-    cr.set_source_rgba(0.85, 0.80, 0.74, 0.85);
-    cr.move_to(led_x + 9.0, led_y + 3.5);
-    cr.show_text("33 ⅓").ok();
-
-    cr.move_to(led45_x + 9.0, led_y + 3.5);
-    cr.show_text("45").ok();
-
-    cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
-    cr.set_font_size(8.0);
-    cr.set_source_rgba(0.80, 0.80, 0.76, 0.50);
-    cr.move_to(led45_x + 28.0, led_y + 3.5);
-    cr.show_text("RPM").ok();
-
-    // Medidores VU Analógicos Estéreo Hi-Fi (Chassi, mostrador e escala dB pré-renderizados)
-    draw_vu_background(&cr, layout.vu_x, layout.vu_y, layout.vu_w, layout.vu_h);
-
-    // Base usinada da Luz Alvo (Stylus Target Light)
-    let tlx = layout.target_light_x;
-    let tly = layout.target_light_y;
-    let tlr = layout.target_light_r;
-    cr.set_source_rgba(0.0, 0.0, 0.0, 0.40);
-    cr.arc(tlx + 1.5, tly + 2.5, tlr + 3.0, 0.0, TAU);
-    cr.fill().ok();
-    let tl_ring = cairo::RadialGradient::new(tlx - 2.0, tly - 2.0, 2.0, tlx, tly, tlr + 2.0);
-    tl_ring.add_color_stop_rgba(0.0, 0.55, 0.54, 0.58, 1.0);
-    tl_ring.add_color_stop_rgba(0.7, 0.22, 0.21, 0.25, 1.0);
-    tl_ring.add_color_stop_rgba(1.0, 0.12, 0.11, 0.14, 1.0);
-    cr.set_source(&tl_ring).ok();
-    cr.arc(tlx, tly, tlr + 2.0, 0.0, TAU);
-    cr.fill().ok();
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.15);
-    cr.set_line_width(0.8);
-    cr.arc(tlx, tly, tlr + 2.0, 0.0, TAU);
-    cr.stroke().ok();
-
-    // Carcaça metálica do Prisma Estroboscópico (Strobe Prism Housing)
-    let sx = layout.strobe_x;
-    let sy = layout.strobe_y;
-    cr.set_source_rgba(0.02, 0.02, 0.03, 0.85);
-    draw_rounded_rect(&cr, sx - 2.0, sy - 14.0, 16.0, 28.0, 4.0);
-    cr.fill().ok();
-    let prism_grad = cairo::LinearGradient::new(sx, sy - 14.0, sx + 14.0, sy + 14.0);
-    prism_grad.add_color_stop_rgba(0.0, 0.42, 0.41, 0.46, 1.0);
-    prism_grad.add_color_stop_rgba(0.6, 0.18, 0.17, 0.20, 1.0);
-    prism_grad.add_color_stop_rgba(1.0, 0.28, 0.27, 0.30, 1.0);
-    cr.set_source(&prism_grad).ok();
-    draw_rounded_rect(&cr, sx, sy - 12.0, 12.0, 24.0, 3.0);
-    cr.fill().ok();
-    // Lente óptica vermelha do prisma estroboscópico
-    cr.set_source_rgb(0.65, 0.08, 0.05);
-    draw_rounded_rect(&cr, sx + 7.0, sy - 8.0, 4.0, 16.0, 1.5);
-    cr.fill().ok();
-
-    // Painel do Pitch Fader (Controle Analógico de Afinação ±8%)
-    let px = layout.pitch_x;
-    let py = layout.pitch_y;
-    let pw = layout.pitch_w;
-    let ph = layout.pitch_h;
-    cr.set_source_rgba(0.02, 0.02, 0.03, 0.75);
-    draw_rounded_rect(&cr, px - 1.0, py - 1.0, pw + 2.0, ph + 2.0, 4.0);
-    cr.fill().ok();
-    let fader_plate = cairo::LinearGradient::new(px, py, px, py + ph);
-    fader_plate.add_color_stop_rgba(0.0, 0.18, 0.18, 0.20, 1.0);
-    fader_plate.add_color_stop_rgba(0.5, 0.12, 0.12, 0.14, 1.0);
-    fader_plate.add_color_stop_rgba(1.0, 0.16, 0.16, 0.18, 1.0);
-    cr.set_source(&fader_plate).ok();
-    draw_rounded_rect(&cr, px, py, pw, ph, 3.0);
-    cr.fill().ok();
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.08);
-    cr.set_line_width(0.8);
-    draw_rounded_rect(&cr, px, py, pw, ph, 3.0);
-    cr.stroke().ok();
-
-    // Ranhura central (slot)
-    let slot_x = px + pw * 0.58;
-    let slot_top = py + 14.0;
-    let slot_h = ph - 28.0;
-    cr.set_source_rgb(0.02, 0.02, 0.03);
-    draw_rounded_rect(&cr, slot_x - 1.5, slot_top, 3.0, slot_h, 1.5);
-    cr.fill().ok();
-
-    // Marcações da escala serigrafada
-    let center_y = py + ph / 2.0;
-    for i in -4..=4 {
-        let frac = i as f64 / 4.0;
-        let y = center_y - frac * (slot_h / 2.0 - 2.0);
-        let is_center = i == 0;
-        let tick_w = if is_center { 7.0 } else if i % 2 == 0 { 5.0 } else { 3.0 };
-        if is_center {
-            cr.set_source_rgba(0.95, 0.85, 0.40, 0.90);
-            cr.set_line_width(1.2);
-        } else {
-            cr.set_source_rgba(0.80, 0.80, 0.75, 0.45);
-            cr.set_line_width(0.7);
-        }
-        cr.move_to(slot_x - 4.0 - tick_w, y);
-        cr.line_to(slot_x - 4.0, y);
-        cr.stroke().ok();
-    }
-
-    // Base do LED Quartz Lock
-    let led_q_x = px + 6.0;
-    let led_q_y = center_y;
-    cr.set_source_rgba(0.04, 0.04, 0.05, 0.9);
-    cr.arc(led_q_x, led_q_y, 3.0, 0.0, TAU);
-    cr.fill().ok();
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.06);
-    cr.set_line_width(0.6);
-    cr.arc(led_q_x, led_q_y, 3.0, 0.0, TAU);
-    cr.stroke().ok();
-
-    // Suporte / Descanso do braço (Rest Cradle) na posição de repouso exata
-    let pivot_x = layout.pivot_x;
-    let pivot_y = layout.pivot_y;
-    let arm_len = layout.arm_len;
-    let rest_angle = 1.476_f64;
-    let rest_x = pivot_x + (arm_len * 0.95) * rest_angle.cos();
-    let rest_y = pivot_y + (arm_len * 0.95) * rest_angle.sin();
-    cr.set_source_rgba(0.08, 0.07, 0.10, 0.95);
-    cr.rectangle(rest_x - 4.0, rest_y - 2.0, 8.0, 16.0);
-    cr.fill().ok();
-    cr.set_source_rgba(0.55, 0.52, 0.60, 0.85);
-    cr.set_line_width(1.5);
-    cr.arc(rest_x, rest_y, 4.5, PI, 0.0);
-    cr.stroke().ok();
-
-    // Base do Cardan / Pivô (Gimbal assembly)
-    cr.set_source_rgba(0.0, 0.0, 0.0, 0.4);
-    cr.arc(pivot_x + 2.0, pivot_y + 3.0, 22.0, 0.0, TAU);
-    cr.fill().ok();
-
-    let gimbal_outer =
-        cairo::RadialGradient::new(pivot_x - 3.0, pivot_y - 3.0, 2.0, pivot_x, pivot_y, 22.0);
-    gimbal_outer.add_color_stop_rgba(0.0, 0.35, 0.33, 0.40, 1.0);
-    gimbal_outer.add_color_stop_rgba(1.0, 0.14, 0.13, 0.16, 1.0);
-    cr.set_source(&gimbal_outer).ok();
-    cr.arc(pivot_x, pivot_y, 21.0, 0.0, TAU);
-    cr.fill().ok();
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.12);
-    cr.set_line_width(1.2);
-    cr.stroke().ok();
-
-    let gimbal_inner =
-        cairo::RadialGradient::new(pivot_x - 2.0, pivot_y - 2.0, 1.0, pivot_x, pivot_y, 14.0);
-    gimbal_inner.add_color_stop_rgba(0.0, 0.85, 0.87, 0.95, 1.0);
-    gimbal_inner.add_color_stop_rgba(0.7, 0.45, 0.44, 0.52, 1.0);
-    gimbal_inner.add_color_stop_rgba(1.0, 0.20, 0.18, 0.24, 1.0);
-    cr.set_source(&gimbal_inner).ok();
-    cr.arc(pivot_x, pivot_y, 14.0, 0.0, TAU);
-    cr.fill().ok();
-
-    Some(surface)
-}
-
-// Rasteriza a arte que gira somente quando a capa ou o tamanho mudam.
-fn render_rotating_disc(
-    r_disc: f64,
-    target_dim: i32,
-    surface_to_draw: Option<cairo::ImageSurface>,
-    scale: i32,
-    rpm: u32,
-) -> Option<cairo::ImageSurface> {
-    // Margem transparente para preservar a borda durante a interpolação.
-    let side = (2.0 * r_disc + 4.0).ceil() as i32;
-    let surface =
-        cairo::ImageSurface::create(cairo::Format::ARgb32, side * scale, side * scale).ok()?;
-    surface.set_device_scale(scale as f64, scale as f64);
-    let cr = cairo::Context::new(&surface).ok()?;
-    cr.translate(side as f64 / 2.0, side as f64 / 2.0);
-    // Recorta estritamente ao formato circular do disco de vinil
-    cr.arc(0.0, 0.0, r_disc, 0.0, TAU);
-    cr.clip();
-
-    if let Some(ref surf) = surface_to_draw {
-        // Capa em superfície Cairo nativa em rotação fluida
-        let half = target_dim as f64 / 2.0;
-        cr.set_source_surface(surf, -half, -half).ok();
-        cr.paint().ok();
-
-        // Vinheta escura elegante nas bordas do vinil para profundidade ótica
-        let edge_shade = cairo::RadialGradient::new(0.0, 0.0, r_disc * 0.76, 0.0, 0.0, r_disc);
-        edge_shade.add_color_stop_rgba(0.0, 0.0, 0.0, 0.0, 0.0);
-        edge_shade.add_color_stop_rgba(0.90, 0.0, 0.0, 0.0, 0.28);
-        edge_shade.add_color_stop_rgba(1.0, 0.0, 0.0, 0.0, 0.58);
-        cr.set_source(&edge_shade).ok();
-        cr.arc(0.0, 0.0, r_disc, 0.0, TAU);
-        cr.fill().ok();
-    } else {
-        // Arte geométrica padrão quando nenhuma capa está carregada
-        cr.set_source_rgb(0.16, 0.13, 0.20);
-        cr.paint().ok();
-        let default_grad = cairo::RadialGradient::new(0.0, 0.0, 8.0, 0.0, 0.0, r_disc);
-        default_grad.set_extend(cairo::Extend::Pad);
-        default_grad.add_color_stop_rgba(0.0, 0.16, 0.13, 0.20, 1.0);
-        default_grad.add_color_stop_rgba(0.65, 0.08, 0.065, 0.10, 1.0);
-        default_grad.add_color_stop_rgba(1.0, 0.03, 0.025, 0.04, 1.0);
-        cr.set_source(&default_grad).ok();
-        cr.arc(0.0, 0.0, r_disc, 0.0, TAU);
-        cr.fill().ok();
-
-        let num_rays = 16;
-        for i in 0..num_rays {
-            if i % 2 == 0 {
-                let a1 = i as f64 * TAU / num_rays as f64;
-                let a2 = (i + 1) as f64 * TAU / num_rays as f64;
-                cr.new_sub_path();
-                cr.arc(0.0, 0.0, r_disc, a1, a2);
-                cr.line_to(0.0, 0.0);
-                cr.close_path();
-                cr.set_source_rgba(0.96, 0.72, 0.22, 0.06);
-                cr.fill().ok();
-            }
-        }
-
-        cr.set_source_rgba(0.96, 0.75, 0.25, 0.25);
-        cr.set_line_width(1.2);
-        cr.arc(0.0, 0.0, r_disc * 0.72, 0.0, TAU);
-        cr.stroke().ok();
-
-        cr.set_source_rgba(0.96, 0.75, 0.25, 0.15);
-        cr.set_line_width(0.8);
-        cr.arc(0.0, 0.0, r_disc * 0.44, 0.0, TAU);
-        cr.stroke().ok();
-
-        cr.select_font_face(
-            "Cantarell, Sans",
-            cairo::FontSlant::Normal,
-            cairo::FontWeight::Bold,
-        );
-        cr.set_font_size(11.0);
-        cr.set_source_rgba(1.0, 0.88, 0.50, 0.85);
-        let brand = "VINYLPLAYER";
-        let bw = cr.text_extents(brand).map(|e| e.width()).unwrap_or(60.0);
-        cr.move_to(-bw / 2.0, -r_disc * 0.32);
-        cr.show_text(brand).ok();
-
-        cr.set_font_size(7.5);
-        cr.set_source_rgba(0.90, 0.78, 0.45, 0.70);
-        let sub = if rpm == 45 {
-            "HI-FI AUDIOPHILE · 45 RPM"
-        } else {
-            "HI-FI AUDIOPHILE · 33 ⅓ RPM"
-        };
-        let sw = cr.text_extents(sub).map(|e| e.width()).unwrap_or(80.0);
-        cr.move_to(-sw / 2.0, r_disc * 0.35);
-        cr.show_text(sub).ok();
-    }
-
-    // Micro-sulcos em lote (batching: dezenas de círculos desenhados em 3 strokes rápidos)
-    // 1. Sulcos regulares
-    cr.new_sub_path();
-    for i in 1..32 {
-        if i % 7 != 0 {
-            let gr = r_disc - (i as f64 * (r_disc * 0.028));
-            if gr > 14.0 {
-                cr.arc(0.0, 0.0, gr, 0.0, TAU);
-            }
-        }
-    }
-    cr.set_line_width(0.7);
-    cr.set_source_rgba(0.0, 0.0, 0.0, 0.08);
-    cr.stroke().ok();
-
-    // 2. Sulcos de intervalo entre faixas
-    cr.new_sub_path();
-    for i in (7..32).step_by(7) {
-        let gr = r_disc - (i as f64 * (r_disc * 0.028));
-        if gr > 14.0 {
-            cr.arc(0.0, 0.0, gr, 0.0, TAU);
-        }
-    }
-    cr.set_line_width(1.3);
-    cr.set_source_rgba(0.0, 0.0, 0.0, 0.22);
-    cr.stroke().ok();
-
-    // 3. Reflexos das bordas dos sulcos
-    cr.new_sub_path();
-    for i in 1..32 {
-        let gr = r_disc - (i as f64 * (r_disc * 0.028));
-        if gr > 14.0 {
-            cr.arc(0.0, 0.0, gr - 0.5, 0.0, TAU);
-        }
-    }
-    cr.set_line_width(0.6);
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.05);
-    cr.stroke().ok();
-
-    // Espiral de runout no centro gravada
-    cr.set_line_width(0.8);
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.12);
-    cr.new_sub_path();
-    for step in 0..100 {
-        let t = step as f64 / 100.0;
-        let r = (r_disc * 0.18) * (1.0 - t * 0.50);
-        let a = t * TAU * 2.0;
-        let gx = r * a.cos();
-        let gy = r * a.sin();
-        if step == 0 {
-            cr.move_to(gx, gy);
-        } else {
-            cr.line_to(gx, gy);
-        }
-    }
-    cr.stroke().ok();
-
-    Some(surface)
-}
-
-#[cfg(test)]
-mod animation_tests {
-    use super::*;
-    use gstreamer::prelude::ElementExtManual;
-
-    #[test]
-    #[ignore = "Requer sessão gráfica; testa abertura inicial e reuso da janela com áudio silencioso"]
-    fn open_files_reuses_window_and_preserves_selection_order() {
-        gtk::init().unwrap();
-        let config = state::TestConfig::new();
-        let [first, second, third] = silent_test_tracks(&config);
-        let app = Application::builder()
-            .application_id("io.github.vinylplayer.opentest")
-            .flags(
-                gtk::gio::ApplicationFlags::HANDLES_OPEN | gtk::gio::ApplicationFlags::NON_UNIQUE,
-            )
-            .build();
-        let builds = Rc::new(Cell::new(0));
-        let captured = Rc::new(RefCell::new(None));
-        let build_count = builds.clone();
-        let captured_audio = captured.clone();
-        let config_path = config.path();
-        file_open::connect_handlers(&app, move |app| {
-            build_count.set(build_count.get() + 1);
-            let audio =
-                build_ui_with_state(app, state::StateManager::with_path(config_path.clone()));
-            let sink = gstreamer::ElementFactory::make("fakesink")
-                .property("sync", true)
-                .build()
-                .unwrap();
-            audio.element().set_property("audio-sink", &sink);
-            *captured_audio.borrow_mut() = Some(audio.clone());
-            audio
-        });
-        app.register(None::<&gtk::gio::Cancellable>).unwrap();
-        let main_loop = glib::MainLoop::new(None, false);
-        app.open(&[gtk::gio::File::for_path(&first)], "");
-        settle(&main_loop);
-        let audio = captured.borrow().as_ref().unwrap().clone();
-        let window = app.active_window().unwrap();
-        let assert_track = |path: &std::path::Path| {
-            wait_for_audio(&audio, &main_loop, gstreamer::State::Playing);
-            assert_eq!(
-                audio.metadata().uri,
-                glib::filename_to_uri(path, None).unwrap().as_str()
-            );
-            assert_eq!(audio.state(), PlaybackState::Playing);
-        };
-        assert_track(&first);
-        app.activate();
-        assert_eq!(app.active_window().unwrap(), window);
-        app.open(
-            &[
-                gtk::gio::File::for_uri(&glib::filename_to_uri(&second, None).unwrap()),
-                gtk::gio::File::for_path(&third),
-            ],
-            "",
-        );
-        settle(&main_loop);
-        assert_track(&second);
-        audio.next().unwrap();
-        settle(&main_loop);
-        assert_track(&third);
-        assert_eq!(builds.get(), 1);
-        assert_eq!(app.windows().len(), 1);
-        assert_eq!(app.active_window().unwrap(), window);
-        app.open(
-            &[gtk::gio::File::for_path(
-                config.path().with_file_name("missing.wav"),
-            )],
-            "",
-        );
-        assert_track(&third);
-        let dialog = gtk::Window::list_toplevels()
-            .into_iter()
-            .find_map(|w| w.downcast::<adw::MessageDialog>().ok())
-            .unwrap();
-        dialog.response("ok");
-        assert_eq!(builds.get(), 1);
-        audio.stop().unwrap();
-        window.close();
-    }
-
-    fn silent_test_tracks(config: &state::TestConfig) -> [std::path::PathBuf; 3] {
-        let first = config.path().with_file_name("03 - Música #1.wav");
-        let second = config.path().with_file_name("02 - Outra faixa.wav");
-        let third = config.path().with_file_name("01 - Última.wav");
-        // PCM mono de 30 segundos: tempo suficiente para verificar a fila sem EOS.
-        let samples = 8000_u32 * 30;
-        let bytes = samples * 2;
-        let mut wav = Vec::new();
-        wav.extend_from_slice(b"RIFF");
-        wav.extend_from_slice(&(36 + bytes).to_le_bytes());
-        wav.extend_from_slice(b"WAVEfmt ");
-        wav.extend_from_slice(&16_u32.to_le_bytes());
-        wav.extend_from_slice(&1_u16.to_le_bytes());
-        wav.extend_from_slice(&1_u16.to_le_bytes());
-        wav.extend_from_slice(&8000_u32.to_le_bytes());
-        wav.extend_from_slice(&16000_u32.to_le_bytes());
-        wav.extend_from_slice(&2_u16.to_le_bytes());
-        wav.extend_from_slice(&16_u16.to_le_bytes());
-        wav.extend_from_slice(b"data");
-        wav.extend_from_slice(&bytes.to_le_bytes());
-        wav.resize(44 + bytes as usize, 0);
-        for path in [&first, &second, &third] {
-            std::fs::write(path, &wav).unwrap();
-        }
-        [first, second, third]
-    }
-
-    fn wait_playback_error(
-        main_loop: &glib::MainLoop,
-        previous: Option<&adw::MessageDialog>,
-    ) -> adw::MessageDialog {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-        loop {
-            if let Some(dialog) = gtk::Window::list_toplevels()
-                .into_iter()
-                .filter_map(|w| w.downcast::<adw::MessageDialog>().ok())
-                .find(|w| {
-                    w.widget_name() == "playback-error" && w.is_visible() && previous != Some(w)
-                })
-            {
-                return dialog;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "Aviso de erro não apareceu"
-            );
-            let done = main_loop.clone();
-            glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || done.quit());
-            main_loop.run();
-        }
-    }
-
-    #[test]
-    #[ignore = "Requer sessão gráfica; testa erros reais, retry, skip, avisos repetidos e fim da fila"]
-    fn playback_errors_recover_missing_corrupt_and_stale_selections() {
-        gtk::init().unwrap();
-        let config = state::TestConfig::new();
-        let fixtures = silent_test_tracks(&config);
-        let manager = state::StateManager::with_path(config.path());
-        manager.update_library_folders(Vec::new());
-        manager.update_queue(playback_queue::QueueSnapshot::default());
-        let app = Application::builder()
-            .application_id("io.github.vinylplayer.errortest")
-            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
-            .build();
-        app.register(None::<&gtk::gio::Cancellable>).unwrap();
-        let audio = build_ui_with_state(&app, manager);
-        let sink = gstreamer::ElementFactory::make("fakesink")
-            .property("sync", true)
-            .build()
-            .unwrap();
-        audio.element().set_property("audio-sink", &sink);
-        let main_loop = glib::MainLoop::new(None, false);
-        std::fs::remove_file(&fixtures[1]).unwrap();
-        let _ = audio.play_files(&[fixtures[1].clone(), fixtures[0].clone()], 0);
-        let dialog = wait_playback_error(&main_loop, None);
-        assert!(dialog.body().contains("não está disponível"));
-        assert_eq!(audio.state(), PlaybackState::Stopped);
-        save_preview(dialog.upcast_ref(), "/tmp/vinylplayer-error-missing.png");
-        silent_test_tracks(&config);
-        dialog.response("retry");
-        wait_for_audio(&audio, &main_loop, gstreamer::State::Playing);
-        assert_eq!(audio.queue_snapshot().current, Some(0));
-        assert_eq!(audio.queue_snapshot().tracks.len(), 2);
-        let corrupt = config.path().with_file_name("Arquivo danificado.wav");
-        std::fs::write(&corrupt, b"this is not a valid audio file").unwrap();
-        let queue = vec![corrupt.clone(), fixtures[0].clone()];
-        let _ = audio.play_files(&queue, 0);
-        let first = wait_playback_error(&main_loop, Some(&dialog));
-        assert!(first.body().contains("danificado"));
-        save_preview(first.upcast_ref(), "/tmp/vinylplayer-error-corrupt.png");
-        first.response("retry");
-        let second = wait_playback_error(&main_loop, Some(&first));
-        assert_ne!(first, second);
-        settle(&main_loop);
-        assert_eq!(
-            gtk::Window::list_toplevels()
-                .into_iter()
-                .filter(|w| w.widget_name() == "playback-error" && w.is_visible())
-                .count(),
-            1
-        );
-        second.response("close");
-        let _ = audio.play();
-        let third = wait_playback_error(&main_loop, Some(&second));
-        audio.set_repeat_mode(RepeatMode::Track);
-        audio.set_shuffle(true);
-        third.response("skip");
-        wait_for_audio(&audio, &main_loop, gstreamer::State::Playing);
-        assert_eq!(audio.queue_snapshot().tracks, queue);
-        assert_eq!(audio.queue_snapshot().current, Some(1));
-        assert_eq!(audio.repeat_mode(), RepeatMode::Track);
-        assert!(audio.shuffle());
-        assert_eq!(
-            audio.metadata().uri,
-            glib::filename_to_uri(&fixtures[0], None).unwrap().as_str()
-        );
-        let _ = audio.play_files(&[corrupt.clone()], 0);
-        let obsolete = wait_playback_error(&main_loop, Some(&third));
-        audio.play_files(&[fixtures[2].clone()], 0).unwrap();
-        obsolete.response("skip");
-        wait_for_audio(&audio, &main_loop, gstreamer::State::Playing);
-        settle(&main_loop);
-        assert_eq!(audio.queue_snapshot().tracks, vec![fixtures[2].clone()]);
-        assert_eq!(audio.queue_snapshot().current, Some(0));
-        let _ = audio.play_files(&[corrupt.clone()], 0);
-        audio.set_repeat_mode(RepeatMode::All);
-        wait_playback_error(&main_loop, Some(&obsolete)).response("skip");
-        settle(&main_loop);
-        assert_eq!(audio.state(), PlaybackState::Stopped);
-        assert_eq!(audio.queue_snapshot().tracks, vec![corrupt]);
-        assert!(!gtk::Window::list_toplevels()
-            .into_iter()
-            .any(|w| w.widget_name() == "playback-error" && w.is_visible()));
-        app.active_window().unwrap().close();
-        audio.element().set_state(gstreamer::State::Null).unwrap();
-    }
-
-    fn wait_for_audio(audio: &AudioEngine, main_loop: &glib::MainLoop, expected: gstreamer::State) {
-        let playback = match expected {
-            gstreamer::State::Playing => PlaybackState::Playing,
-            gstreamer::State::Paused => PlaybackState::Paused,
-            _ => PlaybackState::Stopped,
-        };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-        while audio.state() != playback || audio.element().current_state() != expected {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "Transição para {expected:?} não concluiu"
-            );
-            let done = main_loop.clone();
-            glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || done.quit());
-            main_loop.run();
-        }
-    }
-
-    fn descendants(
-        widget: &gtk::Widget,
-        matches: impl Fn(&gtk::Widget) -> bool + Copy,
-    ) -> Vec<gtk::Widget> {
-        let mut result = Vec::new();
-        if matches(widget) {
-            result.push(widget.clone());
-        }
-        let mut child = widget.first_child();
-        while let Some(widget) = child {
-            child = widget.next_sibling();
-            result.extend(descendants(&widget, matches));
-        }
-        result
-    }
-
-    fn queue_row(window: &gtk::Window, title: &str) -> gtk::Widget {
-        descendants(window.upcast_ref(), |w| w.has_css_class("queue-row"))
-            .into_iter()
-            .find(|row| {
-                descendants(row, |w| w.has_css_class("queue-track-title"))
-                    .into_iter()
-                    .any(|label| label.downcast::<gtk::Label>().unwrap().text() == title)
-            })
-            .expect("faixa visível na fila")
-    }
-
-    fn queue_button(row: &gtk::Widget, name: &str) -> gtk::Button {
-        descendants(row, |_| true)
-            .into_iter()
-            .find(|w| w.widget_name() == name)
-            .unwrap()
-            .downcast()
-            .unwrap()
-    }
-
-    fn wait_for_catalog(catalog: &library_settings::Catalog, main_loop: &glib::MainLoop) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while catalog.scanning.get() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "Leitura da biblioteca não concluiu"
-            );
-            let done = main_loop.clone();
-            glib::timeout_add_local_once(std::time::Duration::from_millis(20), move || done.quit());
-            main_loop.run();
-        }
-    }
-
-    fn menu_in(root: &gtk::Widget) -> gtk::MenuButton {
-        descendants(root, |w| w.widget_name() == "queue-actions")[0]
-            .clone()
-            .downcast()
-            .unwrap()
-    }
-
-    fn enqueue_click(menu: &gtk::MenuButton, action: &str, main_loop: &glib::MainLoop) {
-        settle(main_loop);
-        menu.popup();
-        settle(main_loop);
-        let popover = menu.popover().unwrap();
-        assert!(
-            popover.is_mapped(),
-            "{action}: menu mapeado={}, visível={}",
-            menu.is_mapped(),
-            menu.is_visible()
-        );
-        queue_button(popover.upcast_ref(), action).emit_clicked();
-    }
-
-    fn track_menu(page: &gtk::Widget, title: &str) -> gtk::MenuButton {
-        let row = descendants(page, |w| w.has_css_class("track-row-item"))
-            .into_iter()
-            .find(|row| {
-                descendants(row, |w| w.has_css_class("track-row-name"))
-                    .into_iter()
-                    .any(|w| w.downcast::<gtk::Label>().unwrap().text() == title)
-            })
-            .unwrap();
-        menu_in(&row)
-    }
-
-    #[test]
-    #[ignore = "Requer sessão gráfica; testa menus de adicionar faixa/álbum sem interrupção e persistência"]
-    fn enqueue_menus_preserve_stream_order_pause_and_saved_queue() {
-        gtk::init().unwrap();
-        let config = state::TestConfig::new();
-        let files = silent_test_tracks(&config);
-        let manager = state::StateManager::with_path(config.path());
-        manager.update_library_folders(vec![config.path().parent().unwrap().to_path_buf()]);
-        manager.update_queue(playback_queue::QueueSnapshot::default());
-        let app = Application::builder()
-            .application_id("io.github.vinylplayer.enqueuetest")
-            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
-            .build();
-        app.register(None::<&gtk::gio::Cancellable>).unwrap();
-        let (audio, catalog) = build_ui_with_catalog(&app, manager);
-        let sink = gstreamer::ElementFactory::make("fakesink")
-            .property("sync", true)
-            .build()
-            .unwrap();
-        audio.element().set_property("audio-sink", &sink);
-        let main_loop = glib::MainLoop::new(None, false);
-        wait_for_catalog(&catalog, &main_loop);
-        let window = app.active_window().unwrap();
-        let pages = descendants(window.upcast_ref(), |w| w.widget_name() == "main-pages")[0]
-            .clone()
-            .downcast::<gtk::Stack>()
-            .unwrap();
-        let navigation = pages
-            .child_by_name("albums")
-            .unwrap()
-            .downcast::<gtk::Stack>()
-            .unwrap();
-        let browse = navigation.child_by_name("browse").unwrap();
-        let views = browse
-            .last_child()
-            .unwrap()
-            .downcast::<gtk::Stack>()
-            .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while views.child_by_name("covers").is_none() {
-            assert!(std::time::Instant::now() < deadline);
-            settle(&main_loop);
-        }
-        settle(&main_loop);
-        audio.play_files(&[files[0].clone()], 0).unwrap();
-        wait_for_audio(&audio, &main_loop, gstreamer::State::Playing);
-        let attempt = audio.playback_attempt();
-        let uri = audio.metadata().uri;
-        let before = audio.position_us();
-        pages.set_visible_child_name("tracks");
-        let track_page = pages.child_by_name("tracks").unwrap();
-        let next = track_menu(&track_page, "02 - Outra faixa");
-        next.popup();
-        settle(&main_loop);
-        save_enqueue_popover(&next, "/tmp/vinylplayer-enqueue-options.png");
-        save_preview(&window, "/tmp/vinylplayer-enqueue-track.png");
-        queue_button(next.popover().unwrap().upcast_ref(), "enqueue-next").emit_clicked();
-        let last = track_menu(&track_page, "01 - Última");
-        enqueue_click(&last, "enqueue-last", &main_loop);
-        let mut expected = vec![files[0].clone(), files[1].clone(), files[2].clone()];
-        assert_eq!(audio.queue_snapshot().tracks, expected);
-        pages.set_visible_child_name("albums");
-        views.set_visible_child_name("list");
-        let album_list = views.child_by_name("list").unwrap();
-        let album_menu = menu_in(&album_list);
-        enqueue_click(&album_menu, "enqueue-next", &main_loop);
-        let album_tracks = vec![files[2].clone(), files[1].clone(), files[0].clone()];
-        expected.splice(1..1, album_tracks.clone());
-        assert_eq!(audio.queue_snapshot().tracks, expected);
-        views.set_visible_child_name("covers");
-        let covers = views.child_by_name("covers").unwrap();
-        let grid = descendants(&covers, |w| w.is::<gtk::FlowBox>())[0]
-            .clone()
-            .downcast::<gtk::FlowBox>()
-            .unwrap();
-        grid.child_at_index(0)
-            .unwrap()
-            .child()
-            .unwrap()
-            .downcast::<gtk::Button>()
-            .unwrap()
-            .emit_clicked();
-        let detail = navigation.child_by_name("detail").unwrap();
-        let detail_menu = menu_in(&detail);
-        detail_menu.popup();
-        settle(&main_loop);
-        save_preview(&window, "/tmp/vinylplayer-enqueue-album.png");
-        queue_button(detail_menu.popover().unwrap().upcast_ref(), "enqueue-last").emit_clicked();
-        expected.extend(album_tracks);
-        assert_eq!(audio.queue_snapshot().tracks, expected);
-        assert_eq!(audio.queue_snapshot().current, Some(0));
-        assert_eq!(audio.metadata().uri, uri);
-        assert_eq!(
-            audio.playback_attempt(),
-            attempt,
-            "Adicionar não pode reiniciar o stream"
-        );
-        assert_eq!(audio.element().current_state(), gstreamer::State::Playing);
-        assert!(audio.position_us() >= before);
-        std::fs::remove_file(&files[2]).unwrap();
-        enqueue_click(&detail_menu, "enqueue-last", &main_loop);
-        assert_eq!(
-            audio.queue_snapshot().tracks,
-            expected,
-            "Álbum indisponível não é inserido parcialmente"
-        );
-        assert!(
-            descendants(detail_menu.popover().unwrap().upcast_ref(), |w| w
-                .has_css_class("queue-error"))[0]
-                .is_visible()
-        );
-        detail_menu.popdown();
-        pages.set_visible_child_name("tracks");
-        enqueue_click(&last, "enqueue-next", &main_loop);
-        assert_eq!(audio.queue_snapshot().tracks, expected);
-        last.popdown();
-        silent_test_tracks(&config);
-        audio.pause().unwrap();
-        wait_for_audio(&audio, &main_loop, gstreamer::State::Paused);
-        enqueue_click(&next, "enqueue-last", &main_loop);
-        expected.push(files[1].clone());
-        assert_eq!(audio.state(), PlaybackState::Paused);
-        assert_eq!(audio.playback_attempt(), attempt);
-        assert_eq!(audio.metadata().uri, uri);
-        window.close();
-        audio.element().set_state(gstreamer::State::Null).unwrap();
-        let restored = state::StateManager::with_path(config.path());
-        assert_eq!(
-            restored.snapshot().queue.as_ref().unwrap().tracks.as_ref(),
-            &expected
-        );
-        let (reopened, reopened_catalog) = build_ui_with_catalog(&app, restored);
-        assert_eq!(reopened.queue_snapshot().tracks, expected);
-        assert_eq!(reopened.queue_snapshot().current, Some(0));
-        assert_eq!(reopened.state(), PlaybackState::Stopped);
-        wait_for_catalog(&reopened_catalog, &main_loop);
-        while !reopened.queue_snapshot().tracks.is_empty() {
-            let snapshot = reopened.queue_snapshot();
-            reopened
-                .remove_queue_item(snapshot.revision, snapshot.current.unwrap())
-                .unwrap();
-        }
-        reopened
-            .enqueue_files(&[files[1].clone(), files[2].clone()], true)
-            .unwrap();
-        assert_eq!(
-            reopened.queue_snapshot().tracks,
-            vec![files[1].clone(), files[2].clone()]
-        );
-        assert_eq!(reopened.queue_snapshot().current, Some(0));
-        assert_eq!(reopened.state(), PlaybackState::Stopped);
-        assert_ne!(
-            reopened.element().current_state(),
-            gstreamer::State::Playing
-        );
-        app.active_window().unwrap().close();
-        reopened
-            .element()
-            .set_state(gstreamer::State::Null)
-            .unwrap();
-    }
-
-    #[test]
-    #[ignore = "Requer sessão gráfica; testa pastas, atualização, persistência, avisos e continuidade do áudio"]
-    fn library_folders_update_ui_and_restore_without_interrupting_audio() {
-        gtk::init().unwrap();
-        let config = state::TestConfig::new();
-        let fixtures = silent_test_tracks(&config);
-        let parent = config.path().parent().unwrap().to_path_buf();
-        let folder_a = parent.join("Coleção A");
-        let folder_b = parent.join("Coleção B");
-        std::fs::create_dir(&folder_a).unwrap();
-        std::fs::create_dir(&folder_b).unwrap();
-        let track_a = folder_a.join("01 - Canção.wav");
-        let track_b = folder_b.join("02 - Horizonte.wav");
-        std::fs::copy(&fixtures[0], &track_a).unwrap();
-        std::fs::copy(&fixtures[1], &track_b).unwrap();
-        let manager = state::StateManager::with_path(config.path());
-        manager.update_library_folders(Vec::new());
-        manager.update_queue(playback_queue::QueueSnapshot::default());
-        let app = Application::builder()
-            .application_id("io.github.vinylplayer.foldertest")
-            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
-            .build();
-        app.register(None::<&gtk::gio::Cancellable>).unwrap();
-        let (audio, catalog) = build_ui_with_catalog(&app, manager.clone());
-        let sink = gstreamer::ElementFactory::make("fakesink")
-            .property("sync", true)
-            .build()
-            .unwrap();
-        audio.element().set_property("audio-sink", &sink);
-        audio.play_files(&[fixtures[0].clone()], 0).unwrap();
-        let main_loop = glib::MainLoop::new(None, false);
-        wait_for_catalog(&catalog, &main_loop);
-        settle(&main_loop);
-        wait_for_audio(&audio, &main_loop, gstreamer::State::Playing);
-        let window = app.active_window().unwrap();
-        let frames = Rc::new(Cell::new(0));
-        let counter = frames.clone();
-        descendants(window.upcast_ref(), |w| w.is::<gtk::DrawingArea>())[0].add_tick_callback(
-            move |_, _| {
-                counter.set(counter.get() + 1);
-                glib::ControlFlow::Continue
-            },
-        );
-        let uri = audio.metadata().uri;
-        let position = audio.position_us();
-        catalog.add_root(folder_a.clone()).unwrap();
-        catalog.add_root(folder_b.clone()).unwrap();
-        assert!(catalog.add_root(folder_a.clone()).is_err());
-        wait_for_catalog(&catalog, &main_loop);
-        settle(&main_loop);
-        assert_eq!(
-            catalog.report.borrow().tracks,
-            vec![track_a.clone(), track_b.clone()]
-        );
-        assert_eq!(audio.metadata().uri, uri);
-        assert_eq!(audio.state(), PlaybackState::Playing);
-        assert!(audio.position_us() >= position);
-        assert_eq!(audio.queue_snapshot().tracks, vec![fixtures[0].clone()]);
-        let pages = descendants(window.upcast_ref(), |w| w.widget_name() == "main-pages")[0]
-            .clone()
-            .downcast::<gtk::Stack>()
-            .unwrap();
-        let tracks_page = pages.child_by_name("tracks").unwrap();
-        assert_eq!(
-            descendants(&tracks_page, |w| w.has_css_class("track-row-name")).len(),
-            2
-        );
-        gtk::prelude::WidgetExt::activate_action(&window, "win.library-settings", None).unwrap();
-        settle(&main_loop);
-        let settings = gtk::Window::list_toplevels()
-            .into_iter()
-            .filter_map(|w| w.downcast::<gtk::Window>().ok())
-            .find(|w| w.title().as_deref() == Some("Pastas da biblioteca"))
-            .unwrap();
-        save_preview(&settings, "/tmp/vinylplayer-library-folders.png");
-        queue_button(settings.upcast_ref(), "folder-remove").emit_clicked();
-        wait_for_catalog(&catalog, &main_loop);
-        settle(&main_loop);
-        assert_eq!(
-            catalog.state.snapshot().library_roots(),
-            vec![folder_b.clone()]
-        );
-        assert_eq!(catalog.report.borrow().tracks, vec![track_b.clone()]);
-        assert!(
-            track_a.is_file(),
-            "Remover pasta não deve excluir os arquivos"
-        );
-        queue_button(settings.upcast_ref(), "folder-remove").emit_clicked();
-        wait_for_catalog(&catalog, &main_loop);
-        assert!(catalog.state.snapshot().library_roots().is_empty());
-        assert!(catalog.report.borrow().tracks.is_empty());
-        assert!(descendants(settings.upcast_ref(), |w| w.is::<gtk::Label>())
-            .into_iter()
-            .any(|w| w.is_mapped()
-                && w.downcast::<gtk::Label>().unwrap().text() == "Nenhuma pasta adicionada."));
-        assert!(catalog.add_root(parent.join("não existe")).is_err());
-        catalog.add_root(folder_b.clone()).unwrap();
-        wait_for_catalog(&catalog, &main_loop);
-        let disconnected = parent.join("disco desconectado");
-        std::fs::rename(&folder_b, &disconnected).unwrap();
-        queue_button(settings.upcast_ref(), "folder-refresh").emit_clicked();
-        wait_for_catalog(&catalog, &main_loop);
-        settle(&main_loop);
-        assert!(catalog.report.borrow().tracks.is_empty());
-        assert_eq!(catalog.report.borrow().warnings.len(), 1);
-        let warning =
-            descendants(settings.upcast_ref(), |w| w.has_css_class("queue-error"))[0].clone();
-        assert!(warning.is_mapped());
-        assert!(warning
-            .downcast::<gtk::Label>()
-            .unwrap()
-            .text()
-            .contains("Coleção B"));
-        save_preview(&settings, "/tmp/vinylplayer-library-unavailable.png");
-        assert_eq!(audio.metadata().uri, uri);
-        assert_eq!(audio.state(), PlaybackState::Playing);
-        assert!(
-            frames.get() > 2,
-            "A animação deve continuar recebendo frames durante as atualizações"
-        );
-        queue_button(settings.upcast_ref(), "folder-close").emit_clicked();
-        assert!(!settings.is_visible());
-        assert!(window.is_visible());
-        window.close();
-        audio.element().set_state(gstreamer::State::Null).unwrap();
-        let restored = state::StateManager::with_path(config.path());
-        assert_eq!(restored.snapshot().library_roots(), vec![folder_b.clone()]);
-        let (reopened, restored_catalog) = build_ui_with_catalog(&app, restored);
-        wait_for_catalog(&restored_catalog, &main_loop);
-        assert_eq!(restored_catalog.report.borrow().warnings.len(), 1);
-        assert_eq!(reopened.state(), PlaybackState::Stopped);
-        assert_eq!(reopened.queue_snapshot().tracks, vec![fixtures[0].clone()]);
-        std::fs::rename(&disconnected, &folder_b).unwrap();
-        restored_catalog.refresh();
-        wait_for_catalog(&restored_catalog, &main_loop);
-        assert_eq!(restored_catalog.report.borrow().tracks, vec![track_b]);
-        assert!(restored_catalog.report.borrow().warnings.is_empty());
-        assert_eq!(reopened.state(), PlaybackState::Stopped);
-        app.active_window().unwrap().close();
-        reopened
-            .element()
-            .set_state(gstreamer::State::Null)
-            .unwrap();
-    }
-
-    #[test]
-    #[ignore = "Requer sessão gráfica; valida controles, arraste, fila vazia e renderiza /tmp/vinylplayer-queue.png"]
-    fn queue_panel_edits_preserve_playback_and_render() {
-        gtk::init().unwrap();
-        let config = state::TestConfig::new();
-        let tracks = silent_test_tracks(&config);
-        let app = Application::builder()
-            .application_id("io.github.vinylplayer.queuetest")
-            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
-            .build();
-        app.register(None::<&gtk::gio::Cancellable>).unwrap();
-        let audio = build_ui_with_state(&app, state::StateManager::with_path(config.path()));
-        let sink = gstreamer::ElementFactory::make("fakesink")
-            .property("sync", true)
-            .build()
-            .unwrap();
-        audio.element().set_property("audio-sink", &sink);
-        audio.play_files(&tracks, 1).unwrap();
-        let main_loop = glib::MainLoop::new(None, false);
-        let window = app.active_window().unwrap();
-        settle(&main_loop);
-        wait_for_audio(&audio, &main_loop, gstreamer::State::Playing);
-        let deck = descendants(window.upcast_ref(), |w| w.is::<gtk::DrawingArea>()).remove(0);
-        let width = deck.width();
-        gtk::prelude::WidgetExt::activate_action(&window, "win.toggle-queue", None).unwrap();
-        settle(&main_loop);
-        assert_eq!(
-            deck.width(),
-            width,
-            "O painel sobreposto preserva o tamanho do vinil"
-        );
-        assert!(queue_row(&window, "02 - Outra faixa").is_mapped());
-        save_preview(&window, "/tmp/vinylplayer-queue.png");
-        let uri = audio.metadata().uri;
-        let before = audio.position_us();
-        queue_button(&queue_row(&window, "02 - Outra faixa"), "queue-down").emit_clicked();
-        assert_eq!(
-            audio.queue_snapshot().tracks,
-            [tracks[0].clone(), tracks[2].clone(), tracks[1].clone()]
-        );
-        assert_eq!(audio.queue_snapshot().current, Some(2));
-        assert_eq!(audio.metadata().uri, uri);
-        assert!(audio.position_us() >= before);
-        settle(&main_loop);
-
-        // Exercita os sinais reais do DragSource e DropTarget, incluindo o payload privado.
-        let source_row = queue_row(&window, "03 - Música #1");
-        let controllers = source_row.first_child().unwrap().observe_controllers();
-        let source = (0..controllers.n_items())
-            .find_map(|i| controllers.item(i)?.downcast::<gtk::DragSource>().ok())
-            .unwrap();
-        let provider = source
-            .emit_by_name::<Option<gdk::ContentProvider>>("prepare", &[&0_f64, &0_f64])
-            .unwrap();
-        let payload = provider.value(String::static_type()).unwrap();
-        let target_row = queue_row(&window, "02 - Outra faixa");
-        let controllers = target_row.observe_controllers();
-        let target = (0..controllers.n_items())
-            .find_map(|i| controllers.item(i)?.downcast::<gtk::DropTarget>().ok())
-            .unwrap();
-        assert!(target.emit_by_name::<bool>(
-            "drop",
-            &[
-                &glib::BoxedValue(payload.clone()),
-                &0_f64,
-                &(target_row.height() as f64)
-            ]
-        ));
-        assert_eq!(
-            audio.queue_snapshot().tracks,
-            [tracks[2].clone(), tracks[1].clone(), tracks[0].clone()]
-        );
-        assert_eq!(audio.metadata().uri, uri);
-        assert_eq!(audio.state(), PlaybackState::Playing);
-        settle(&main_loop);
-        let target_row = queue_row(&window, "02 - Outra faixa");
-        let controllers = target_row.observe_controllers();
-        let target = (0..controllers.n_items())
-            .find_map(|i| controllers.item(i)?.downcast::<gtk::DropTarget>().ok())
-            .unwrap();
-        assert!(!target.emit_by_name::<bool>("drop", &[&glib::BoxedValue(payload), &0_f64, &0_f64]));
-        queue_button(&queue_row(&window, "03 - Música #1"), "queue-remove").emit_clicked();
-        assert_eq!(audio.metadata().uri, uri);
-        assert_eq!(audio.queue_snapshot().tracks.len(), 2);
-        settle(&main_loop);
-
-        // Seleciona uma faixa pela fila, pausa e remove a atual sem retomar o áudio.
-        let row = queue_row(&window, "01 - Última");
-        row.first_child()
-            .unwrap()
-            .next_sibling()
-            .unwrap()
-            .downcast::<gtk::Button>()
-            .unwrap()
-            .emit_clicked();
-        wait_for_audio(&audio, &main_loop, gstreamer::State::Playing);
-        audio.pause().unwrap();
-        wait_for_audio(&audio, &main_loop, gstreamer::State::Paused);
-        settle(&main_loop);
-        queue_button(&queue_row(&window, "01 - Última"), "queue-remove").emit_clicked();
-        wait_for_audio(&audio, &main_loop, gstreamer::State::Paused);
-        assert_eq!(audio.metadata().uri, uri);
-        settle(&main_loop);
-        queue_button(&queue_row(&window, "02 - Outra faixa"), "queue-remove").emit_clicked();
-        settle(&main_loop);
-        assert!(audio.queue_snapshot().tracks.is_empty());
-        assert!(audio.metadata().uri.is_empty());
-        assert_eq!(audio.state(), PlaybackState::Stopped);
-        assert!(
-            descendants(window.upcast_ref(), |w| w.has_css_class("queue-empty"))[0].is_mapped()
-        );
-        assert!(descendants(window.upcast_ref(), |w| w.has_css_class("queue-row")).is_empty());
-        save_preview(&window, "/tmp/vinylplayer-queue-empty.png");
-
-        // Uma fila extensa não cria um widget por arquivo.
-        audio
-            .play_files(&vec![tracks[0].clone(); 2_000], 1_900)
-            .unwrap();
-        settle(&main_loop);
-        let rendered = descendants(window.upcast_ref(), |w| w.has_css_class("queue-row")).len();
-        assert!(
-            rendered > 0 && rendered < 500,
-            "Virtualização criou {rendered} linhas"
-        );
-        queue_button(window.upcast_ref(), "queue-reveal-current").emit_clicked();
-        settle(&main_loop);
-        assert!(
-            descendants(window.upcast_ref(), |w| w.has_css_class("queue-current"))[0].is_mapped()
-        );
-        gtk::prelude::WidgetExt::activate_action(&window, "win.toggle-queue", None).unwrap();
-        settle(&main_loop);
-        assert!(!queue_row(&window, "03 - Música #1").is_mapped());
-        audio.stop().unwrap();
-        window.close();
-    }
-
-    #[test]
-    #[ignore = "Requer sessão gráfica e ffmpeg; busca por tags, ações filtradas, duplicatas e captura"]
-    fn queue_search_preserves_original_indices_and_playback() {
-        gtk::init().unwrap();
-        let config = state::TestConfig::new();
-        let tracks = silent_test_tracks(&config);
-        let tagged = tracks[2].with_file_name("metadata.flac");
-        assert!(std::process::Command::new("ffmpeg")
-            .args(["-v", "error", "-y", "-i"])
-            .arg(&tracks[2])
-            .args(["-metadata", "title=Horizonte Azul", "-metadata", "artist=João Silva",
-                "-metadata", "album_artist=Vários Artistas", "-metadata", "album=Coleção Solar"])
-            .arg(&tagged).status().unwrap().success());
-        let app = Application::builder()
-            .application_id("io.github.vinylplayer.queuesearchtest")
-            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE).build();
-        app.register(None::<&gtk::gio::Cancellable>).unwrap();
-        let audio = build_ui_with_state(&app, state::StateManager::with_path(config.path()));
-        let sink = gstreamer::ElementFactory::make("fakesink").property("sync", true).build().unwrap();
-        audio.element().set_property("audio-sink", &sink);
-        let original = vec![tracks[0].clone(), tracks[1].clone(), tagged.clone(), tracks[0].clone()];
-        audio.play_files(&original, 0).unwrap();
-        let main_loop = glib::MainLoop::new(None, false);
-        let window = app.active_window().unwrap();
-        wait_for_audio(&audio, &main_loop, gstreamer::State::Playing);
-        gtk::prelude::WidgetExt::activate_action(&window, "win.toggle-queue", None).unwrap();
-        settle(&main_loop);
-        let search = descendants(window.upcast_ref(), |w| w.widget_name() == "queue-search")
-            .remove(0).downcast::<gtk::SearchEntry>().unwrap();
-        let list = descendants(window.upcast_ref(), |w| w.widget_name() == "queue-list")
-            .remove(0).downcast::<gtk::ListView>().unwrap();
-        let indices = || -> Vec<String> {
-            let model = list.model().unwrap();
-            (0..model.n_items()).map(|i| model.item(i).unwrap().downcast::<gtk::StringObject>().unwrap().string().to_string()).collect()
-        };
-        let uri = audio.metadata().uri;
-        let attempt = audio.playback_attempt();
-        let before = audio.position_us();
-        for query in ["horizonte azul", "joao silva", "colecao solar", "varios artistas"] {
-            search.set_text(query);
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
-            loop {
-                settle(&main_loop);
-                if indices() == ["2"] { break; }
-                assert!(std::time::Instant::now() < deadline, "Metadados não chegaram: {query}");
-            }
-            assert_eq!(audio.queue_snapshot().tracks, original);
-            assert_eq!(audio.metadata().uri, uri);
-            assert_eq!(audio.playback_attempt(), attempt);
-        }
-        assert!(audio.position_us() >= before);
-        assert_eq!(audio.state(), PlaybackState::Playing);
-        save_preview(&window, "/tmp/vinylplayer-queue-search.png");
-        queue_button(&queue_row(&window, "Horizonte Azul"), "queue-up").emit_clicked();
-        settle(&main_loop);
-        assert_eq!(indices(), ["1"]);
-        assert_eq!(audio.queue_snapshot().tracks, [tracks[0].clone(), tagged.clone(), tracks[1].clone(), tracks[0].clone()]);
-        assert_eq!(audio.metadata().uri, uri);
-        let row = queue_row(&window, "Horizonte Azul");
-        descendants(&row, |w| w.has_css_class("queue-track")).remove(0)
-            .downcast::<gtk::Button>().unwrap().emit_clicked();
-        wait_for_audio(&audio, &main_loop, gstreamer::State::Playing);
-        assert_eq!(audio.queue_snapshot().current, Some(1));
-        audio.pause().unwrap();
-        wait_for_audio(&audio, &main_loop, gstreamer::State::Paused);
-        search.set_text("musica");
-        settle(&main_loop);
-        assert_eq!(indices(), ["0", "3"]);
-        let rows = descendants(window.upcast_ref(), |w| w.has_css_class("queue-row") && w.is_mapped());
-        queue_button(rows.last().unwrap(), "queue-remove").emit_clicked();
-        settle(&main_loop);
-        assert_eq!(audio.queue_snapshot().tracks, [tracks[0].clone(), tagged.clone(), tracks[1].clone()]);
-        assert_eq!(audio.queue_snapshot().current, Some(1));
-        assert_eq!(audio.state(), PlaybackState::Paused);
-        assert_eq!(indices(), ["0"]);
-        audio.enqueue_files(&[tracks[0].clone()], false).unwrap();
-        settle(&main_loop);
-        assert_eq!(indices(), ["0", "3"]);
-        search.set_text("sem resultado xyz");
-        settle(&main_loop);
-        assert!(indices().is_empty());
-        let summary = descendants(window.upcast_ref(), |w| w.has_css_class("queue-summary"))
-            .remove(0).downcast::<gtk::Label>().unwrap();
-        assert_eq!(summary.text(), "0 de 4 faixas");
-        assert!(descendants(window.upcast_ref(), |w| w.has_css_class("queue-empty"))[0].is_mapped());
-        save_preview(&window, "/tmp/vinylplayer-queue-search-empty.png");
-        queue_button(window.upcast_ref(), "queue-search-clear").emit_clicked();
-        settle(&main_loop);
-        assert_eq!(indices(), ["0", "1", "2", "3"]);
-        search.set_text("sem resultado");
-        settle(&main_loop);
-        queue_button(window.upcast_ref(), "queue-reveal-current").emit_clicked();
-        settle(&main_loop);
-        assert!(search.text().is_empty());
-        assert_eq!(indices(), ["0", "1", "2", "3"]);
-        assert_eq!(audio.queue_snapshot().current, Some(1));
-        assert_eq!(audio.state(), PlaybackState::Paused);
-        search.set_text("musica");
-        settle(&main_loop);
-        let rows = descendants(window.upcast_ref(), |w| w.has_css_class("queue-row") && w.is_mapped());
-        assert_eq!(rows.len(), 2);
-        let controllers = rows[1].first_child().unwrap().observe_controllers();
-        let source = (0..controllers.n_items()).find_map(|i| controllers.item(i)?.downcast::<gtk::DragSource>().ok()).unwrap();
-        let provider = source.emit_by_name::<Option<gdk::ContentProvider>>("prepare", &[&0_f64, &0_f64]).unwrap();
-        let payload = provider.value(String::static_type()).unwrap();
-        let controllers = rows[0].observe_controllers();
-        let target = (0..controllers.n_items()).find_map(|i| controllers.item(i)?.downcast::<gtk::DropTarget>().ok()).unwrap();
-        assert!(target.emit_by_name::<bool>("drop", &[&glib::BoxedValue(payload.clone()), &0_f64, &0_f64]));
-        settle(&main_loop);
-        assert_eq!(audio.queue_snapshot().tracks, [tracks[0].clone(), tracks[0].clone(), tagged.clone(), tracks[1].clone()]);
-        assert_eq!(audio.queue_snapshot().current, Some(2));
-        assert_eq!(indices(), ["0", "1"]);
-        assert_eq!(audio.state(), PlaybackState::Paused);
-        assert!(!target.emit_by_name::<bool>("drop", &[&glib::BoxedValue(payload), &0_f64, &0_f64]));
-        audio.stop().unwrap();
-        window.close();
-    }
-
-    #[test]
-    #[ignore = "Requer sessão gráfica; fecha/reabre fila ordenada, duplicatas, arquivo ausente e fila vazia sem autoplay"]
-    fn queue_restores_after_immediate_close_without_autoplay() {
-        gtk::init().unwrap();
-        let config = state::TestConfig::new();
-        let tracks = silent_test_tracks(&config);
-        let manager = state::StateManager::with_path(config.path());
-        manager.update_volume(0.37);
-        manager.update_active_view("albums");
-        let app = Application::builder()
-            .application_id("io.github.vinylplayer.queuerestore")
-            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
-            .build();
-        app.register(None::<&gtk::gio::Cancellable>).unwrap();
-        let audio = build_ui_with_state(&app, manager);
-        let sink = gstreamer::ElementFactory::make("fakesink")
-            .property("sync", true)
-            .build()
-            .unwrap();
-        audio.element().set_property("audio-sink", &sink);
-        audio
-            .play_files(
-                &[
-                    tracks[0].clone(),
-                    tracks[1].clone(),
-                    tracks[2].clone(),
-                    tracks[1].clone(),
-                ],
-                3,
-            )
-            .unwrap();
-        let main_loop = glib::MainLoop::new(None, false);
-        settle(&main_loop);
-        wait_for_audio(&audio, &main_loop, gstreamer::State::Playing);
-        let revision = audio.queue_snapshot().revision;
-        audio.move_queue_item(revision, 0, 2).unwrap();
-        let revision = audio.queue_snapshot().revision;
-        audio.remove_queue_item(revision, 1).unwrap();
-        let expected = audio.queue_snapshot();
-        assert_eq!(expected.current, Some(2));
-        // Sem tick entre a última edição e o fechamento.
-        app.active_window().unwrap().close();
-        audio.element().set_state(gstreamer::State::Null).unwrap();
-        let restored = state::StateManager::with_path(config.path());
-        let saved = restored.snapshot();
-        assert_eq!(
-            saved.queue.as_ref().unwrap().tracks.as_ref(),
-            &expected.tracks
-        );
-        assert_eq!(saved.queue.as_ref().unwrap().current, Some(2));
-        assert_eq!(saved.volume, 0.37);
-        assert_eq!(saved.active_view, "albums");
-        let intact = build_ui_with_state(&app, restored.clone());
-        settle(&main_loop);
-        assert_eq!(intact.queue_snapshot().tracks, expected.tracks);
-        assert_eq!(intact.queue_snapshot().current, Some(2));
-        assert_eq!(intact.state(), PlaybackState::Stopped);
-        assert_eq!(intact.element().current_state(), gstreamer::State::Ready);
-        app.active_window().unwrap().close();
-        intact.element().set_state(gstreamer::State::Null).unwrap();
-        // Arquivos indisponíveis são ignorados ao restaurar; seleciona a entrada válida anterior.
-        std::fs::remove_file(&tracks[1]).unwrap();
-        let reopened = build_ui_with_state(&app, restored);
-        settle(&main_loop);
-        assert_eq!(reopened.queue_snapshot().tracks, vec![tracks[0].clone()]);
-        assert_eq!(reopened.queue_snapshot().current, Some(0));
-        assert_eq!(reopened.state(), PlaybackState::Stopped);
-        assert_ne!(
-            reopened.element().current_state(),
-            gstreamer::State::Playing
-        );
-        assert_eq!(reopened.position_us(), 0);
-        assert_eq!(
-            reopened.metadata().uri,
-            glib::filename_to_uri(&tracks[0], None).unwrap().as_str()
-        );
-        // A fila filtrada é persistida; devolver o arquivo não o reinsere automaticamente.
-        app.active_window().unwrap().close();
-        reopened
-            .element()
-            .set_state(gstreamer::State::Null)
-            .unwrap();
-        silent_test_tracks(&config);
-        let reopened = build_ui_with_state(&app, state::StateManager::with_path(config.path()));
-        settle(&main_loop);
-        assert_eq!(reopened.queue_snapshot().tracks, vec![tracks[0].clone()]);
-        assert_eq!(reopened.queue_snapshot().current, Some(0));
-        assert_eq!(reopened.state(), PlaybackState::Stopped);
-        assert_eq!(reopened.element().current_state(), gstreamer::State::Ready);
-        while !reopened.queue_snapshot().tracks.is_empty() {
-            let snapshot = reopened.queue_snapshot();
-            reopened
-                .remove_queue_item(snapshot.revision, snapshot.current.unwrap())
-                .unwrap();
-        }
-        app.active_window().unwrap().close();
-        let final_manager = state::StateManager::with_path(config.path());
-        assert!(final_manager.snapshot().queue.unwrap().tracks.is_empty());
-        let empty = build_ui_with_state(&app, final_manager);
-        settle(&main_loop);
-        assert!(empty.queue_snapshot().tracks.is_empty());
-        assert!(empty.metadata().uri.is_empty());
-        assert_eq!(empty.state(), PlaybackState::Stopped);
-        assert_eq!(empty.element().current_state(), gstreamer::State::Null);
-        app.active_window().unwrap().close();
-        // Seleção ausente com sucessora válida; depois, nenhuma entrada disponível.
-        let manager = state::StateManager::with_path(config.path());
-        let missing = config.path().with_file_name("missing.wav");
-        manager.update_queue(playback_queue::QueueSnapshot {
-            revision: 1,
-            tracks: vec![tracks[0].clone(), missing.clone(), tracks[2].clone()],
-            current: Some(1),
-        });
-        manager.flush_now().unwrap();
-        let successor = build_ui_with_state(&app, manager.clone());
-        settle(&main_loop);
-        assert_eq!(
-            successor.queue_snapshot().tracks,
-            vec![tracks[0].clone(), tracks[2].clone()]
-        );
-        assert_eq!(successor.queue_snapshot().current, Some(1));
-        assert_eq!(successor.state(), PlaybackState::Stopped);
-        app.active_window().unwrap().close();
-        successor
-            .element()
-            .set_state(gstreamer::State::Null)
-            .unwrap();
-        manager.update_queue(playback_queue::QueueSnapshot {
-            revision: 1,
-            tracks: vec![missing],
-            current: Some(0),
-        });
-        manager.flush_now().unwrap();
-        let unavailable = build_ui_with_state(&app, manager);
-        settle(&main_loop);
-        assert!(unavailable.queue_snapshot().tracks.is_empty());
-        assert_eq!(unavailable.queue_snapshot().current, None);
-        assert!(unavailable.metadata().uri.is_empty());
-        assert_eq!(unavailable.state(), PlaybackState::Stopped);
-        app.active_window().unwrap().close();
-    }
-
-    #[test]
-    #[ignore = "Requer sessão gráfica; testa erro de gravação usando pasta temporária"]
-    fn close_error_keeps_preferences_and_retry_closes_window() {
-        gtk::init().unwrap();
-        let config = state::TestConfig::new();
-        let blocker = config.path();
-        std::fs::write(&blocker, b"not a directory").unwrap();
-        let path = blocker.join("state.json");
-        let manager = state::StateManager::with_path(path.clone());
-        let app = Application::builder()
-            .application_id("io.github.vinylplayer.savepreview")
-            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
-            .build();
-        app.register(None::<&gtk::gio::Cancellable>).unwrap();
-        let _audio = build_ui_with_state(&app, manager.clone());
-        let main_loop = glib::MainLoop::new(None, false);
-        settle(&main_loop);
-        let window = app.active_window().unwrap();
-        manager.update_volume(0.42);
-        window.close();
-        assert!(
-            window.is_visible(),
-            "Uma falha de gravação não deve descartar a janela"
-        );
-        assert_eq!(manager.snapshot().volume, 0.42);
-        let dialog = gtk::Window::list_toplevels()
-            .into_iter()
-            .find_map(|widget| widget.downcast::<adw::MessageDialog>().ok())
-            .expect("Aviso de erro");
-        dialog.response("back");
-        std::fs::remove_file(&blocker).unwrap();
-        window.close();
-        assert!(!window.is_visible());
-        let restored = state::StateManager::with_path(path).snapshot();
-        assert_eq!(restored.volume, 0.42);
-    }
-
-    #[test]
-    #[ignore = "Requer sessão gráfica; testa alternância 33/45 RPM na interface e persistência"]
-    fn rpm_speed_toggles_and_persists() {
-        gtk::init().unwrap();
-        let config = state::TestConfig::new();
-        let manager = state::StateManager::with_path(config.path());
-        assert_eq!(manager.snapshot().rpm, 33);
-
-        let app = Application::builder()
-            .application_id("io.github.vinylplayer.rpmtest")
-            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
-            .build();
-        app.register(None::<&gtk::gio::Cancellable>).unwrap();
-        let _audio = build_ui_with_state(&app, manager.clone());
-        let main_loop = glib::MainLoop::new(None, false);
-        settle(&main_loop);
-
-        let window = app.active_window().unwrap();
-        let rpm_buttons = descendants(window.upcast_ref(), |w| w.has_css_class("rpm-button"));
-        assert_eq!(rpm_buttons.len(), 2);
-        let btn_33 = rpm_buttons[0].downcast_ref::<gtk::ToggleButton>().unwrap();
-        let btn_45 = rpm_buttons[1].downcast_ref::<gtk::ToggleButton>().unwrap();
-
-        assert!(btn_33.is_active());
-        assert!(!btn_45.is_active());
-
-        // Alterna para 45 RPM
-        btn_45.set_active(true);
-        settle(&main_loop);
-
-        assert!(!btn_33.is_active());
-        assert!(btn_45.is_active());
-        assert_eq!(manager.snapshot().rpm, 45);
-
-        // Desmarcar não desativa
-        btn_45.set_active(false);
-        settle(&main_loop);
-        assert!(btn_45.is_active());
-
-        // Alterna de volta para 33 RPM
-        btn_33.set_active(true);
-        settle(&main_loop);
-
-        assert!(btn_33.is_active());
-        assert!(!btn_45.is_active());
-        assert_eq!(manager.snapshot().rpm, 33);
-
-        window.close();
-        settle(&main_loop);
-    }
-
-    #[test]
-    #[ignore = "Requer sessão gráfica; testa botões de shuffle e repeat na interface e persistência"]
-    fn shuffle_and_repeat_buttons_toggle_and_persist() {
-        gtk::init().unwrap();
-        let config = state::TestConfig::new();
-        let manager = state::StateManager::with_path(config.path());
-        assert!(!manager.snapshot().shuffle);
-        assert_eq!(manager.snapshot().repeat_mode, RepeatMode::Off);
-
-        let app = Application::builder()
-            .application_id("io.github.vinylplayer.shuffletest")
-            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
-            .build();
-        app.register(None::<&gtk::gio::Cancellable>).unwrap();
-        let audio = build_ui_with_state(&app, manager.clone());
-        let main_loop = glib::MainLoop::new(None, false);
-        settle(&main_loop);
-
-        let window = app.active_window().unwrap();
-        let shuffle_buttons =
-            descendants(window.upcast_ref(), |w| w.has_css_class("shuffle-button"));
-        assert_eq!(shuffle_buttons.len(), 1);
-        let repeat_buttons = descendants(window.upcast_ref(), |w| w.has_css_class("repeat-button"));
-        assert_eq!(repeat_buttons.len(), 1);
-
-        let s_btn = shuffle_buttons[0].downcast_ref::<gtk::Button>().unwrap();
-        let r_btn = repeat_buttons[0].downcast_ref::<gtk::Button>().unwrap();
-
-        assert!(!s_btn.has_css_class("active"));
-        assert!(!r_btn.has_css_class("active"));
-
-        // Clica no botão de shuffle
-        s_btn.emit_clicked();
-        settle(&main_loop);
-        assert!(audio.shuffle());
-        assert!(s_btn.has_css_class("active"));
-        assert!(manager.snapshot().shuffle);
-
-        // Clica no botão de repeat (Off -> All)
-        r_btn.emit_clicked();
-        settle(&main_loop);
-        assert_eq!(audio.repeat_mode(), RepeatMode::All);
-        assert!(r_btn.has_css_class("active"));
-        assert_eq!(manager.snapshot().repeat_mode, RepeatMode::All);
-
-        // Clica novamente (All -> Track)
-        r_btn.emit_clicked();
-        settle(&main_loop);
-        assert_eq!(audio.repeat_mode(), RepeatMode::Track);
-        assert!(r_btn.has_css_class("active"));
-        assert_eq!(manager.snapshot().repeat_mode, RepeatMode::Track);
-
-        // Clica novamente (Track -> Off)
-        r_btn.emit_clicked();
-        settle(&main_loop);
-        assert_eq!(audio.repeat_mode(), RepeatMode::Off);
-        assert!(!r_btn.has_css_class("active"));
-        assert_eq!(manager.snapshot().repeat_mode, RepeatMode::Off);
-
-        // Desativa shuffle
-        s_btn.emit_clicked();
-        settle(&main_loop);
-        assert!(!audio.shuffle());
-        assert!(!s_btn.has_css_class("active"));
-        assert!(!manager.snapshot().shuffle);
-
-        window.close();
-        settle(&main_loop);
-    }
-
-    fn settle(main_loop: &glib::MainLoop) {
-        let done = main_loop.clone();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || done.quit());
-        main_loop.run();
-    }
-
-    fn save_preview(window: &gtk::Window, filename: &str) {
-        window.present();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-        loop {
-            let snapshot = gtk::Snapshot::new();
-            gtk::WidgetPaintable::new(Some(window)).snapshot(
-                &snapshot,
-                window.width() as f64,
-                window.height() as f64,
-            );
-            if let Some(node) = snapshot.to_node() {
-                let renderer = gtk::gsk::CairoRenderer::new();
-                renderer.realize(None::<&gdk::Surface>).unwrap();
-                renderer
-                    .render_texture(&node, None)
-                    .save_to_png(filename)
-                    .unwrap();
-                renderer.unrealize();
-                return;
-            }
-            if std::time::Instant::now() >= deadline {
-                let layout: Vec<_> = descendants(window.upcast_ref(), |w| {
-                    w.is::<gtk::Stack>() || w.is::<gtk::ScrolledWindow>() || w.is::<gtk::ListBox>()
-                })
-                .into_iter()
-                .filter(|w| w.is_mapped())
-                .take(12)
-                .map(|w| (w.type_().name().to_string(), w.width(), w.height()))
-                .collect();
-                eprintln!("Layout da captura {filename}: {layout:?}");
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "Janela não renderizou: {filename}; visível={}, mapeada={}, realizada={}, tamanho={}x{}",
-                window.is_visible(), window.is_mapped(), window.is_realized(), window.width(), window.height()
-            );
-            window.queue_draw();
-            let wait = glib::MainLoop::new(None, false);
-            let done = wait.clone();
-            glib::timeout_add_local_full(
-                std::time::Duration::from_millis(50),
-                glib::Priority::LOW,
-                move || {
-                    done.quit();
-                    glib::ControlFlow::Break
-                },
-            );
-            wait.run();
-        }
-    }
-
-    fn save_enqueue_popover(menu: &gtk::MenuButton, filename: &str) {
-        let popover = menu.popover().unwrap();
-        let snapshot = gtk::Snapshot::new();
-        gtk::WidgetPaintable::new(Some(&popover)).snapshot(
-            &snapshot,
-            popover.width() as f64,
-            popover.height() as f64,
-        );
-        let node = snapshot.to_node().expect("Popover renderizado");
-        let renderer = gtk::gsk::CairoRenderer::new();
-        renderer.realize(None::<&gdk::Surface>).unwrap();
-        renderer
-            .render_texture(&node, None)
-            .save_to_png(filename)
-            .unwrap();
-        renderer.unrealize();
-    }
-
-    #[test]
-    #[ignore = "Requer sessão gráfica; gera a prévia visual em /tmp"]
-    fn render_professional_preview() {
-        gtk::init().unwrap();
-        let app = Application::builder()
-            .application_id("io.github.vinylplayer.preview")
-            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
-            .build();
-        app.register(None::<&gtk::gio::Cancellable>).unwrap();
-        let test_config = state::TestConfig::new();
-        let audio = build_ui_with_state(&app, state::StateManager::with_path(test_config.path()));
-        let silent_sink = gstreamer::ElementFactory::make("fakesink")
-            .property("sync", true)
-            .build()
-            .unwrap();
-        audio.element().set_property("audio-sink", &silent_sink);
-        let main_loop = glib::MainLoop::new(None, false);
-        let exit_loop = main_loop.clone();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || {
-            exit_loop.quit()
-        });
-        main_loop.run();
-        let window = app.active_window().unwrap();
-        save_preview(&window, "/tmp/vinylplayer-professional.png");
-        let body = window.child().unwrap().first_child().unwrap();
-        let content = body.last_child().unwrap();
-        let pages = content
-            .last_child()
-            .unwrap()
-            .downcast::<adw::OverlaySplitView>()
-            .unwrap()
-            .content()
-            .unwrap()
-            .downcast::<gtk::Stack>()
-            .unwrap();
-        pages.set_visible_child_name("albums");
-        let album_navigation = pages
-            .child_by_name("albums")
-            .unwrap()
-            .downcast::<gtk::Stack>()
-            .unwrap();
-        let album_views = album_navigation
-            .child_by_name("browse")
-            .unwrap()
-            .last_child()
-            .unwrap()
-            .downcast::<gtk::Stack>()
-            .unwrap();
-        let indexed_deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-        while album_views.child_by_name("covers").is_none() {
-            assert!(
-                std::time::Instant::now() < indexed_deadline,
-                "Indexação dos álbuns não concluiu"
-            );
-            let done = main_loop.clone();
-            glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || done.quit());
-            main_loop.run();
-        }
-        for (view, filename) in [
-            ("covers", "/tmp/vinylplayer-album-grid.png"),
-            ("list", "/tmp/vinylplayer-album-list.png"),
-        ] {
-            album_views.set_visible_child_name(view);
-            let exit_loop = main_loop.clone();
-            glib::timeout_add_local_once(std::time::Duration::from_millis(1000), move || {
-                exit_loop.quit()
-            });
-            main_loop.run();
-            assert_eq!(album_views.visible_child_name().as_deref(), Some(view));
-            save_preview(&window, filename);
-        }
-        album_views.set_visible_child_name("covers");
-        let grid_widget = album_views
-            .child_by_name("covers")
-            .unwrap()
-            .downcast::<gtk::ScrolledWindow>()
-            .unwrap()
-            .child()
-            .unwrap();
-        let grid = grid_widget
-            .clone()
-            .downcast::<gtk::FlowBox>()
-            .unwrap_or_else(|_| {
-                grid_widget
-                    .first_child()
-                    .unwrap()
-                    .downcast::<gtk::FlowBox>()
-                    .unwrap()
-            });
-        let button = grid
-            .child_at_index(0)
-            .expect("Biblioteca para a prévia")
-            .child()
-            .unwrap()
-            .downcast::<gtk::Button>()
-            .unwrap();
-        button.emit_clicked();
-        assert_eq!(
-            album_navigation.visible_child_name().as_deref(),
-            Some("detail")
-        );
-        let exit_loop = main_loop.clone();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
-            exit_loop.quit()
-        });
-        main_loop.run();
-        save_preview(&window, "/tmp/vinylplayer-album-detail.png");
-        let detail = album_navigation.child_by_name("detail").unwrap();
-        assert_eq!(
-            audio.state(),
-            PlaybackState::Stopped,
-            "Abrir uma capa não inicia áudio"
-        );
-        let scroll = detail
-            .last_child()
-            .unwrap()
-            .downcast::<gtk::ScrolledWindow>()
-            .unwrap();
-        let content = scroll.child().unwrap();
-        let list = content
-            .clone()
-            .downcast::<gtk::ListBox>()
-            .unwrap_or_else(|_| {
-                content
-                    .first_child()
-                    .unwrap()
-                    .downcast::<gtk::ListBox>()
-                    .unwrap()
-            });
-        let first = list
-            .row_at_index(0)
-            .unwrap()
-            .child()
-            .unwrap()
-            .first_child()
-            .unwrap()
-            .downcast::<gtk::Button>()
-            .unwrap();
-        let second = list
-            .row_at_index(1)
-            .unwrap()
-            .child()
-            .unwrap()
-            .first_child()
-            .unwrap()
-            .downcast::<gtk::Button>()
-            .unwrap();
-        first.emit_clicked();
-        settle(&main_loop);
-        assert!(first.has_css_class("playback-current"));
-        assert!(!second.has_css_class("playback-current"));
-        assert!(button.has_css_class("playback-current"));
-        save_preview(&window, "/tmp/vinylplayer-playing-track.png");
-        pages.set_visible_child_name("overview");
-        settle(&main_loop);
-        save_preview(&window, "/tmp/vinylplayer-turntable-playing.png");
-        pages.set_visible_child_name("albums");
-        album_navigation.set_visible_child_name("browse");
-        settle(&main_loop);
-        save_preview(&window, "/tmp/vinylplayer-playing-album.png");
-        album_navigation.set_visible_child_name("detail");
-        audio.pause().unwrap();
-        settle(&main_loop);
-        assert!(first.has_css_class("playback-paused"));
-        assert!(button.has_css_class("playback-paused"));
-        save_preview(&window, "/tmp/vinylplayer-paused-track.png");
-        audio.play().unwrap();
-        settle(&main_loop);
-        assert!(!first.has_css_class("playback-paused"));
-        audio.next().unwrap();
-        settle(&main_loop);
-        assert!(!first.has_css_class("playback-current"));
-        assert!(second.has_css_class("playback-current"));
-        assert!(button.has_css_class("playback-current"));
-        audio.stop().unwrap();
-        settle(&main_loop);
-        assert!(!second.has_css_class("playback-current"));
-        assert!(!button.has_css_class("playback-current"));
-        detail
-            .first_child()
-            .unwrap()
-            .downcast::<gtk::Button>()
-            .unwrap()
-            .emit_clicked();
-        assert_eq!(
-            album_navigation.visible_child_name().as_deref(),
-            Some("browse")
-        );
-        assert_eq!(album_views.visible_child_name().as_deref(), Some("covers"));
-        window.close();
-    }
-
-    #[test]
-    fn rotating_disc_preserves_transparency_and_display_scale() {
-        for scale in [1, 2] {
-            let mut surface = render_rotating_disc(120.25, 241, None, scale, 33).unwrap();
-            assert_eq!(surface.width(), 245 * scale);
-            assert_eq!(surface.height(), 245 * scale);
-            assert_eq!(surface.device_scale(), (scale as f64, scale as f64));
-            let stride = surface.stride() as usize;
-            let middle = surface.width() as usize / 2;
-            let data = surface.data().unwrap();
-            let pixel = |x: usize, y: usize| {
-                u32::from_ne_bytes(
-                    data[y * stride + x * 4..y * stride + x * 4 + 4]
-                        .try_into()
-                        .unwrap(),
-                )
-            };
-            assert_eq!(pixel(0, 0) >> 24, 0);
-            assert_eq!(pixel(middle, middle) >> 24, 255);
-        }
-    }
-
-    #[test]
-    fn rotating_disc_includes_the_cover() {
-        let cover = cairo::ImageSurface::create(cairo::Format::ARgb32, 240, 240).unwrap();
-        let cr = cairo::Context::new(&cover).unwrap();
-        cr.set_source_rgb(0.9, 0.05, 0.05);
-        cr.paint().unwrap();
-        drop(cr);
-        let mut disc = render_rotating_disc(120.0, 240, Some(cover), 1, 33).unwrap();
-        let stride = disc.stride() as usize;
-        let data = disc.data().unwrap();
-        let offset = 122 * stride + 122 * 4;
-        let pixel = u32::from_ne_bytes(data[offset..offset + 4].try_into().unwrap());
-        assert!((pixel >> 16) & 255 > (pixel >> 8) & 255);
-    }
-
-    #[test]
-    fn rotating_disc_supports_45_rpm() {
-        let disc = render_rotating_disc(120.0, 240, None, 1, 45).unwrap();
-        assert_eq!(disc.width(), 244);
-    }
-
-    #[test]
-    fn volume_hud_gauge_and_fade_calculation() {
-        let mut hud = VolumeHudState::default();
-        assert_eq!(hud.alpha, 0.0);
-        assert!(!hud.tick_fade());
-
-        hud.trigger(0.75);
-        assert_eq!(hud.level, 0.75);
-        assert_eq!(hud.alpha, 1.0);
-        assert!(hud.last_active.is_some());
-        assert!(hud.tick_fade());
-
-        // Clamping do volume
-        hud.trigger(1.5);
-        assert_eq!(hud.level, 1.0);
-        hud.trigger(-0.5);
-        assert_eq!(hud.level, 0.0);
-    }
-
-    #[test]
-    fn draw_volume_hud_renders_without_panic() {
-        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 200, 200).unwrap();
-        let cr = cairo::Context::new(&surface).unwrap();
-        // Alpha zero não deve desenhar nada
-        draw_volume_hud(&cr, 100.0, 100.0, 0.5, 0.0);
-        // Alpha ativo desenha o HUD analógico completo
-        draw_volume_hud(&cr, 100.0, 100.0, 0.75, 1.0);
-        drop(cr);
-        assert_eq!(surface.width(), 200);
-        assert_eq!(surface.height(), 200);
-    }
-
-    #[test]
-    fn render_volume_hud_preview_to_file() {
-        let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 580, 360).unwrap();
-        let cr = cairo::Context::new(&surface).unwrap();
-        let cache = Rc::new(RefCell::new(TurntableCache {
-            bg_surface: None,
-            disc_surface: None,
-            cover: CachedCover {
-                key: String::new(),
-                original: None,
-                surface: None,
-            },
-        }));
-        draw_turntable(
-            &cr, 580, 360, 0.45, 1.88, true, &cache, 1, 33, 0.75, 1.0, 0.65, 0.72, true, 0.0,
-        );
-        drop(cr);
-
-        let stride = surface.stride() as usize;
-        let data = surface.data().unwrap();
-        let bytes = glib::Bytes::from(&data[..]);
-        let texture = gdk::MemoryTexture::new(
-            580,
-            360,
-            gdk::MemoryFormat::B8g8r8a8Premultiplied,
-            &bytes,
-            stride,
-        );
-        texture.save_to_png("docs/volume-hud.png").unwrap();
-        assert!(std::path::Path::new("docs/volume-hud.png").exists());
-    }
-
-    #[test]
-    fn vu_layout_coordinates_and_clearances() {
-        let layout = TurntableLayout::compute(560.0, 340.0);
-        assert_eq!(layout.vu_w, 96.0);
-        assert_eq!(layout.vu_h, 35.0);
-
-        // Deve estar contido dentro do chassi
-        assert!(layout.vu_x >= layout.mx);
-        assert!(layout.vu_x + layout.vu_w <= layout.mx + layout.dw);
-        assert!(layout.vu_y >= layout.my);
-        assert!(layout.vu_y + layout.vu_h <= layout.my + layout.dh);
-
-        // Folga em relação à borda do prato giratório
-        let dy_top = (layout.vu_y - layout.cy).abs();
-        if dy_top < layout.r_platter {
-            let platter_edge_top = layout.cx + (layout.r_platter.powi(2) - dy_top.powi(2)).sqrt();
-            let gap = layout.vu_x - platter_edge_top;
-            assert!(
-                gap > 12.0,
-                "folga do prato deve ser > 12px (obtido {gap:.1}px)"
-            );
-        }
-
-        // Folga abaixo do descanso do braço (rest cradle)
-        let arm_len = layout.arm_len;
-        let rest_y = layout.pivot_y + (arm_len * 0.95) * (1.476_f64).sin();
-        let gap_cradle = layout.vu_y - (rest_y + 16.0);
-        assert!(
-            gap_cradle > 30.0,
-            "folga abaixo do descanso deve ser > 30px (obtido {gap_cradle:.1}px)"
-        );
-    }
-
-    #[test]
-    fn vu_meter_ballistics_attack_decay_behavior() {
-        let update_needle = |cur: f64, target: f64, dt: f64| -> f64 {
-            if target > cur {
-                let rate = (1.0 - (-dt * 26.0_f64).exp()).min(1.0);
-                cur + (target - cur) * rate
-            } else {
-                let rate = (1.0 - (-dt * 7.5_f64).exp()).min(1.0);
-                cur + (target - cur) * rate
-            }
-        };
-
-        let dt = 0.050; // 50ms
-                        // Ataque: deve subir rápido em 50ms
-        let rise = update_needle(0.0, 0.80, dt);
-        assert!(
-            rise > 0.50,
-            "ataque deve subir > 50% em 50ms (obtido {rise:.2})"
-        );
-
-        // Decaimento: deve cair suavemente
-        let fall = update_needle(0.80, 0.0, dt);
-        assert!(
-            fall > 0.40,
-            "decaimento deve reter carga balística (obtido {fall:.2})"
-        );
-        assert!(fall < 0.80);
-    }
-
-    #[test]
-    fn vu_meter_renders_all_states_without_panic() {
-        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 200, 100).unwrap();
-        let cr = cairo::Context::new(&surface).unwrap();
-        let layout = TurntableLayout::compute(200.0, 100.0);
-
-        draw_vu_background(&cr, layout.vu_x, layout.vu_y, layout.vu_w, layout.vu_h);
-
-        // Repouso (silêncio)
-        draw_vu_meters(&cr, &layout, 0.0, 0.0, false);
-        // Nominal (0 VU) tocando
-        draw_vu_meters(&cr, &layout, 0.708, 0.708, true);
-        // Pico (+3 dB VU) e Sobrecarga (> +3 dB)
-        draw_vu_meters(&cr, &layout, 1.0, 1.15, true);
-        drop(cr);
-    }
-
-    #[test]
-    fn render_vu_meter_preview_to_file() {
-        let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 580, 360).unwrap();
-        let cr = cairo::Context::new(&surface).unwrap();
-        let cache = Rc::new(RefCell::new(TurntableCache {
-            bg_surface: None,
-            disc_surface: None,
-            cover: CachedCover {
-                key: String::new(),
-                original: None,
-                surface: None,
-            },
-        }));
-        // Renderiza com L em 0.62 (-1.5 dB VU) e R em 0.85 (+1.5 dB VU, agulha em pico vermelho!)
-        draw_turntable(
-            &cr, 580, 360, 0.85, 2.15, true, &cache, 1, 33, 0.0, 0.0, 0.62, 0.85, true, 0.0,
-        );
-        drop(cr);
-
-        let stride = surface.stride() as usize;
-        let data = surface.data().unwrap();
-        let bytes = glib::Bytes::from(&data[..]);
-        let texture = gdk::MemoryTexture::new(
-            580,
-            360,
-            gdk::MemoryFormat::B8g8r8a8Premultiplied,
-            &bytes,
-            stride,
-        );
-        texture.save_to_png("docs/vu-meter.png").unwrap();
-        assert!(std::path::Path::new("docs/vu-meter.png").exists());
-    }
-
-    #[test]
-    fn analog_controls_layout_and_clearances() {
-        let layout = TurntableLayout::compute(560.0, 340.0);
-
-        // 1. Luz Alvo (Stylus Target Light)
-        assert!(layout.target_light_x >= layout.mx);
-        assert!(layout.target_light_x <= layout.mx + layout.dw);
-        assert!(layout.target_light_y >= layout.my);
-        assert!(layout.target_light_y <= layout.my + layout.dh);
-        let dist_tl_center = ((layout.target_light_x - layout.cx).powi(2)
-            + (layout.target_light_y - layout.cy).powi(2))
-        .sqrt();
-        assert!(
-            dist_tl_center > layout.r_platter,
-            "A torre da luz alvo deve ficar do lado de fora do prato giratório"
-        );
-
-        // 2. Prisma Estroboscópico (Strobe Prism)
-        assert!(layout.strobe_x >= layout.mx);
-        assert!(layout.strobe_x <= layout.mx + layout.dw);
-        assert!(layout.strobe_y >= layout.my);
-        assert!(layout.strobe_y <= layout.my + layout.dh);
-        let dist_strobe_center = ((layout.strobe_x - layout.cx).powi(2)
-            + (layout.strobe_y - layout.cy).powi(2))
-        .sqrt();
-        assert!(
-            dist_strobe_center > layout.r_platter,
-            "O prisma estroboscópico deve ficar fora do prato giratório"
-        );
-
-        // 3. Pitch Fader (Controle de Afinação)
-        assert!(layout.pitch_x >= layout.mx);
-        assert!(layout.pitch_x + layout.pitch_w <= layout.mx + layout.dw);
-        assert!(layout.pitch_y >= layout.my);
-        assert!(layout.pitch_y + layout.pitch_h <= layout.mx + layout.dh);
-
-        // Folga acima dos medidores VU
-        let gap_to_vu = layout.vu_y - (layout.pitch_y + layout.pitch_h);
-        assert!(
-            gap_to_vu >= 15.0,
-            "Folga entre Pitch Fader e VU Meters deve ser >= 15px (obtido {gap_to_vu:.1}px)"
-        );
-    }
-
-    #[test]
-    fn analog_turntable_renders_all_states_without_panic() {
-        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 580, 360).unwrap();
-        let cr = cairo::Context::new(&surface).unwrap();
-        let cache = Rc::new(RefCell::new(TurntableCache {
-            bg_surface: None,
-            disc_surface: None,
-            cover: CachedCover {
-                key: String::new(),
-                original: None,
-                surface: None,
-            },
-        }));
-
-        // Estado 1: Luz Alvo ativa, Pitch em +4.5% (LED Quartz desligado)
-        draw_turntable(
-            &cr, 580, 360, 0.45, 1.88, true, &cache, 1, 33, 0.75, 1.0, 0.65, 0.72, true, 0.045,
-        );
-
-        // Estado 2: Luz Alvo desligada, Pitch em 0.0% (LED Quartz travado e iluminado)
-        draw_turntable(
-            &cr, 580, 360, 0.85, 2.15, true, &cache, 1, 45, 0.0, 0.0, 0.62, 0.85, false, 0.0,
-        );
-        drop(cr);
-    }
-}
-
-fn draw_turntable(
-    cr: &gtk::cairo::Context,
-    w: i32,
-    h: i32,
-    disc_angle: f64,
-    arm_angle: f64,
-    is_playing: bool,
-    cache: &Rc<RefCell<TurntableCache>>,
-    scale: i32,
-    rpm: u32,
-    volume_level: f64,
-    volume_alpha: f64,
-    vu_needle_l: f64,
-    vu_needle_r: f64,
-    target_light_on: bool,
-    pitch: f64,
-) {
-    let layout = TurntableLayout::compute(w as f64, h as f64);
-
-    // 1. Pintura ultrarrápida do fundo pré-renderizado (Chassi, Platter Rim, Gimbal Base, Strobe Dots)
-    {
-        let mut state = cache.borrow_mut();
-        let bg_matches = match state.bg_surface {
-            Some((bw, bh, _)) => bw == w && bh == h,
-            None => false,
-        };
-        if !bg_matches {
-            if let Some(bg) = render_background(&layout, w, h) {
-                state.bg_surface = Some((w, h, bg));
-            }
-        }
-    }
-
-    if let Some((_, _, ref bg)) = cache.borrow().bg_surface {
-        cr.set_source_surface(bg, 0.0, 0.0).ok();
-        cr.paint().ok();
-    }
-
-    // 2. Pontos Estroboscópicos Dinâmicos em Rotação com Feixe Neon Vermelho
-    draw_strobe_dots(cr, &layout, disc_angle, is_playing);
-
-    // 2. LEDs Indicadores de velocidade (33 e 45 RPM)
-    let led33_x = layout.led_x;
-    let led33_y = layout.led_y;
-    let led45_x = layout.led_x + 50.0;
-    let led45_y = layout.led_y;
-
-    let draw_led = |cr: &gtk::cairo::Context, x: f64, y: f64, active: bool| {
-        if active {
-            if is_playing {
-                let led_glow = cairo::RadialGradient::new(x, y, 1.0, x, y, 9.0);
-                led_glow.add_color_stop_rgba(0.0, 0.98, 0.75, 0.14, 0.7);
-                led_glow.add_color_stop_rgba(1.0, 0.98, 0.75, 0.14, 0.0);
-                cr.set_source(&led_glow).ok();
-                cr.arc(x, y, 9.0, 0.0, TAU);
-                cr.fill().ok();
-                cr.set_source_rgb(0.98, 0.78, 0.20);
-            } else {
-                cr.set_source_rgb(0.55, 0.38, 0.12);
-            }
-        } else {
-            cr.set_source_rgb(0.20, 0.18, 0.20);
-        }
-        cr.arc(x, y, 3.5, 0.0, TAU);
-        cr.fill().ok();
-    };
-
-    draw_led(cr, led33_x, led33_y, rpm != 45);
-    draw_led(cr, led45_x, led45_y, rpm == 45);
-
-    // 3. Disco de Vinil com Capa Inteira (Picture Disc em Rotação Contínua)
-    let cx = layout.cx;
-    let cy = layout.cy;
-    let r_disc = layout.r_disc;
-    let target_dim = (2.0 * r_disc).round() as i32;
-
-    // Obtém ou prepara superfície escalada em cache (executado 1 única vez por imagem!)
-    let surface_to_draw = {
-        let mut state = cache.borrow_mut();
-        let mut matching = None;
-        if let Some((dim, ref surf)) = state.cover.surface {
-            if dim == target_dim {
-                matching = Some(surf.clone());
-            }
-        }
-        if matching.is_some() {
-            matching
-        } else if let Some(ref orig) = state.cover.original {
-            let pw = orig.width();
-            let ph = orig.height();
-            let size = pw.min(ph);
-            if size > 0 && target_dim > 0 {
-                let sub = orig.new_subpixbuf((pw - size) / 2, (ph - size) / 2, size, size);
-                if let Some(scaled) =
-                    sub.scale_simple(target_dim, target_dim, gdk_pixbuf::InterpType::Hyper)
-                {
-                    if let Ok(surf) =
-                        cairo::ImageSurface::create(cairo::Format::ARgb32, target_dim, target_dim)
-                    {
-                        if let Ok(surf_cr) = cairo::Context::new(&surf) {
-                            surf_cr.set_source_pixbuf(&scaled, 0.0, 0.0);
-                            surf_cr.paint().ok();
-                            state.cover.surface = Some((target_dim, surf.clone()));
-                            Some(surf)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    };
-
-    // Reutiliza o disco completo: sulcos, espiral, texto, capa e vinheta.
-    let rotating_disc = {
-        let mut state = cache.borrow_mut();
-        let matches = state
-            .disc_surface
-            .as_ref()
-            .map(|(radius, cached_scale, cached_rpm, _)| {
-                *radius == r_disc && *cached_scale == scale && *cached_rpm == rpm
-            })
-            .unwrap_or(false);
-        if !matches {
-            state.disc_surface =
-                render_rotating_disc(r_disc, target_dim, surface_to_draw, scale, rpm)
-                    .map(|surface| (r_disc, scale, rpm, surface));
-        }
-        state
-            .disc_surface
-            .as_ref()
-            .map(|(_, _, _, surface)| surface.clone())
-    };
-    if let Some(surface) = rotating_disc {
-        let half = surface.width() as f64 / (2.0 * scale as f64);
-        cr.save().ok();
-        cr.translate(cx, cy);
-        cr.rotate(disc_angle);
-        cr.set_source_surface(&surface, -half, -half).ok();
-        cr.source().set_filter(cairo::Filter::Bilinear);
-        cr.paint().ok();
-        cr.restore().ok();
-    }
-
-    // 4. Detalhes de Superfície Fixos (Iluminação de Estúdio & Borda Externa)
-    // Borda chanfrada externa de vinil maciço
-    cr.set_source_rgba(0.0, 0.0, 0.0, 0.50);
-    cr.set_line_width(2.6);
-    cr.arc(cx, cy, r_disc - 1.3, 0.0, TAU);
-    cr.stroke().ok();
-
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.26);
-    cr.set_line_width(1.0);
-    cr.arc(cx, cy, r_disc - 0.5, 0.0, TAU);
-    cr.stroke().ok();
-
-    // Brilho Anisotrópico de Luz no Vinil (Reflexo borboleta de estúdio estático)
-    let sheen_angles = [0.75, 0.75 + PI];
-    for &sa in &sheen_angles {
-        let sheen = cairo::RadialGradient::new(cx, cy, 14.0, cx, cy, r_disc);
-        sheen.add_color_stop_rgba(0.0, 1.0, 1.0, 1.0, 0.18);
-        sheen.add_color_stop_rgba(0.5, 1.0, 1.0, 1.0, 0.07);
-        sheen.add_color_stop_rgba(1.0, 1.0, 1.0, 1.0, 0.0);
-        cr.set_source(&sheen).ok();
-
-        cr.new_sub_path();
-        cr.arc(cx, cy, r_disc - 1.0, sa - 0.28, sa + 0.28);
-        cr.line_to(cx, cy);
-        cr.close_path();
-        cr.fill().ok();
-    }
-
-    // Colar metálico cromado do furo central (Grommet)
-    cr.set_source_rgba(0.88, 0.90, 0.96, 0.95);
-    cr.set_line_width(2.0);
-    cr.arc(cx, cy, 9.0, 0.0, TAU);
-    cr.stroke().ok();
-
-    // Furo central preto (Spindle hole)
-    cr.set_source_rgb(0.03, 0.02, 0.04);
-    cr.arc(cx, cy, 6.0, 0.0, TAU);
-    cr.fill().ok();
-
-    // Pino central usinado (Spindle pin) em latão polido dourado
-    let pin_grad = cairo::RadialGradient::new(cx - 1.2, cy - 1.2, 0.5, cx, cy, 4.2);
-    pin_grad.add_color_stop_rgba(0.0, 1.0, 0.96, 0.70, 1.0);
-    pin_grad.add_color_stop_rgba(0.8, 0.88, 0.65, 0.22, 1.0);
-    pin_grad.add_color_stop_rgba(1.0, 0.45, 0.30, 0.08, 1.0);
-    cr.set_source(&pin_grad).ok();
-    cr.arc(cx, cy, 4.0, 0.0, TAU);
-    cr.fill().ok();
-
-    // 5. Braço do Toca-Discos (Tonearm) de Alta Fidelidade
-    let pivot_x = layout.pivot_x;
-    let pivot_y = layout.pivot_y;
-    let arm_len = layout.arm_len;
-
-    // Desenho do Braço Articulado rotacionado pelo arm_angle
-    cr.save().ok();
-    cr.translate(pivot_x, pivot_y);
-    cr.rotate(arm_angle);
-
-    // Contrapeso Traseiro (Counterweight) no lado oposto do braço
-    cr.set_source_rgba(0.05, 0.04, 0.06, 0.95);
-    cr.rectangle(-32.0, -9.0, 22.0, 18.0);
-    cr.fill().ok();
-
-    // Anel de ajuste de peso graduado
-    cr.set_source_rgba(0.85, 0.88, 0.95, 0.85);
-    cr.set_line_width(1.0);
-    cr.rectangle(-32.0, -9.0, 22.0, 18.0);
-    cr.stroke().ok();
-
-    cr.move_to(-21.0, -9.0);
-    cr.line_to(-21.0, 9.0);
-    cr.stroke().ok();
-
-    // Eixo de fixação do contrapeso
-    cr.set_source_rgba(0.7, 0.72, 0.8, 1.0);
-    cr.rectangle(-38.0, -3.0, 8.0, 6.0);
-    cr.fill().ok();
-
-    // Tubo Metálico do Braço (Curva S clássica para redução de erro angular)
-    // Sombra projetada do braço
-    cr.set_source_rgba(0.0, 0.0, 0.0, 0.35);
-    cr.set_line_width(4.5);
-    cr.move_to(2.0, 4.0);
-    cr.curve_to(
-        arm_len * 0.35,
-        -12.0 + 4.0,
-        arm_len * 0.68,
-        14.0 + 4.0,
-        arm_len,
-        4.0,
-    );
-    cr.stroke().ok();
-
-    // Tubo de alumínio cromado
-    let tube_grad = cairo::LinearGradient::new(0.0, -4.0, 0.0, 4.0);
-    tube_grad.add_color_stop_rgba(0.0, 0.92, 0.93, 0.98, 1.0);
-    tube_grad.add_color_stop_rgba(0.5, 0.65, 0.66, 0.75, 1.0);
-    tube_grad.add_color_stop_rgba(1.0, 0.28, 0.26, 0.32, 1.0);
-    cr.set_source(&tube_grad).ok();
-    cr.set_line_width(3.6);
-    cr.move_to(0.0, 0.0);
-    cr.curve_to(arm_len * 0.35, -12.0, arm_len * 0.68, 14.0, arm_len, 0.0);
-    cr.stroke().ok();
-
-    // Brilho especular central no tubo metálico
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.75);
-    cr.set_line_width(1.1);
-    cr.move_to(0.0, 0.0);
-    cr.curve_to(arm_len * 0.35, -12.0, arm_len * 0.68, 14.0, arm_len, 0.0);
-    cr.stroke().ok();
-
-    // Cápsula Fonográfica e Agulha (Headshell & Cartridge)
-    cr.save().ok();
-    cr.translate(arm_len, 0.0);
-    cr.rotate(-0.25);
-
-    // Corpo da cápsula (Headshell preto acetinado)
-    cr.set_source_rgb(0.09, 0.08, 0.11);
-    cr.rectangle(-2.0, -5.5, 20.0, 11.0);
-    cr.fill().ok();
-
-    // Detalhe dourado da cápsula (Audiophile Cartridge)
-    cr.set_source_rgb(0.95, 0.72, 0.22);
-    cr.rectangle(10.0, -5.5, 4.0, 11.0);
-    cr.fill().ok();
-
-    // Indicador LED de leitura na agulha
-    if is_playing {
-        let needle_glow = cairo::RadialGradient::new(17.0, 0.0, 0.5, 17.0, 0.0, 7.0);
-        needle_glow.add_color_stop_rgba(0.0, 1.0, 0.85, 0.3, 0.9);
-        needle_glow.add_color_stop_rgba(1.0, 1.0, 0.85, 0.3, 0.0);
-        cr.set_source(&needle_glow).ok();
-        cr.arc(17.0, 0.0, 7.0, 0.0, TAU);
-        cr.fill().ok();
-
-        cr.set_source_rgb(1.0, 0.95, 0.65);
-    } else {
-        cr.set_source_rgb(0.40, 0.30, 0.15);
-    }
-    cr.arc(17.0, 0.0, 2.0, 0.0, TAU);
-    cr.fill().ok();
-
-    cr.restore().ok();
-    cr.restore().ok();
-
-    // Tampa central do rolamento do pivô
-    let cap_grad =
-        cairo::RadialGradient::new(pivot_x - 1.5, pivot_y - 1.5, 0.5, pivot_x, pivot_y, 7.0);
-    cap_grad.add_color_stop_rgba(0.0, 1.0, 1.0, 1.0, 0.9);
-    cap_grad.add_color_stop_rgba(0.5, 0.65, 0.68, 0.75, 1.0);
-    cap_grad.add_color_stop_rgba(1.0, 0.25, 0.24, 0.30, 1.0);
-    cr.set_source(&cap_grad).ok();
-    cr.arc(pivot_x, pivot_y, 6.5, 0.0, TAU);
-    cr.fill().ok();
-
-    // 5. Luz Alvo Retrátil da Agulha (Stylus Target Light)
-    draw_target_light(cr, &layout, target_light_on, is_playing);
-
-    // 6. Controle Analógico de Pitch Fader (±8% com Quartz Lock)
-    draw_pitch_fader(cr, &layout, pitch);
-
-    // 7. HUD Analógico de Volume (Overlay estroboscópico/vintage ao rolar o scroll)
-    draw_volume_hud(cr, layout.cx, layout.cy, volume_level, volume_alpha);
-
-    // 8. Medidores VU Analógicos Estéreo Dinâmicos (Ponteiros Balísticos Hi-Fi)
-    draw_vu_meters(cr, &layout, vu_needle_l, vu_needle_r, is_playing);
-}
-
-fn draw_strobe_dots(
-    cr: &gtk::cairo::Context,
-    layout: &TurntableLayout,
-    disc_angle: f64,
-    is_playing: bool,
-) {
-    let cx = layout.cx;
-    let cy = layout.cy;
-    let r_platter = layout.r_platter;
-    let sx = layout.strobe_x;
-    let sy = layout.strobe_y;
-
-    // 1. Feixe de luz estroboscópica neon vermelha emitida pelo prisma óptico
-    let strobe_glow = cairo::RadialGradient::new(sx + 8.0, sy, 1.0, sx + 14.0, sy, 32.0);
-    strobe_glow.add_color_stop_rgba(0.0, 1.0, 0.22, 0.12, if is_playing { 0.85 } else { 0.35 });
-    strobe_glow.add_color_stop_rgba(0.4, 0.95, 0.14, 0.08, if is_playing { 0.45 } else { 0.12 });
-    strobe_glow.add_color_stop_rgba(1.0, 0.85, 0.08, 0.04, 0.0);
-    cr.set_source(&strobe_glow).ok();
-    cr.arc(sx + 14.0, sy, 32.0, 0.0, TAU);
-    cr.fill().ok();
-
-    // 2. Duas fileiras de calibração estroboscópica usinadas na lateral chanfrada
-    let rows: &[(f64, usize, f64)] = &[
-        (r_platter - 2.2, 72, 1.15),
-        (r_platter - 5.0, 53, 1.05),
-    ];
-
-    for &(radius, count, dot_r) in rows {
-        for i in 0..count {
-            let base_ang = (i as f64 * TAU / count as f64) + disc_angle;
-            let px = cx + radius * base_ang.cos();
-            let py = cy + radius * base_ang.sin();
-
-            let dist_to_strobe = ((px - (sx + 8.0)).powi(2) + (py - sy).powi(2)).sqrt();
-            if dist_to_strobe < 28.0 {
-                let intensity = (1.0 - dist_to_strobe / 28.0).max(0.0);
-                if is_playing {
-                    cr.set_source_rgba(1.0, 0.25 + 0.5 * intensity, 0.20, 0.95);
-                } else {
-                    cr.set_source_rgba(0.95, 0.35, 0.25, 0.75);
-                }
-            } else {
-                cr.set_source_rgba(0.82, 0.85, 0.92, 0.65);
-            }
-            cr.arc(px, py, dot_r, 0.0, TAU);
-            cr.fill().ok();
-        }
-    }
-}
-
-fn draw_target_light(
-    cr: &gtk::cairo::Context,
-    layout: &TurntableLayout,
-    active: bool,
-    _is_playing: bool,
-) {
-    let tlx = layout.target_light_x;
-    let tly = layout.target_light_y;
-    let tlr = layout.target_light_r;
-
-    let lift = if active { 4.0 } else { 0.0 };
-
-    let body_grad = cairo::LinearGradient::new(tlx - tlr, tly, tlx + tlr, tly);
-    body_grad.add_color_stop_rgba(0.0, 0.35, 0.34, 0.38, 1.0);
-    body_grad.add_color_stop_rgba(0.3, 0.75, 0.74, 0.78, 1.0);
-    body_grad.add_color_stop_rgba(0.7, 0.25, 0.24, 0.28, 1.0);
-    body_grad.add_color_stop_rgba(1.0, 0.45, 0.44, 0.48, 1.0);
-    cr.set_source(&body_grad).ok();
-    cr.arc(tlx, tly - lift, tlr - 1.5, 0.0, TAU);
-    cr.fill().ok();
-
-    cr.set_source_rgba(0.85, 0.86, 0.92, 0.85);
-    cr.set_line_width(0.8);
-    cr.arc(tlx, tly - lift, tlr - 1.5, 0.0, TAU);
-    cr.stroke().ok();
-
-    let lens_x = tlx + 3.0;
-    let lens_y = tly - lift - 2.0;
-
-    if active {
-        let beam_target_x = layout.cx + layout.r_disc * 0.68;
-        let beam_target_y = layout.cy + layout.r_disc * 0.32;
-        let beam_len = 190.0;
-
-        let beam = cairo::RadialGradient::new(lens_x, lens_y, 2.0, beam_target_x, beam_target_y, beam_len);
-        beam.add_color_stop_rgba(0.0, 1.0, 0.94, 0.75, 0.38);
-        beam.add_color_stop_rgba(0.3, 1.0, 0.90, 0.60, 0.16);
-        beam.add_color_stop_rgba(0.7, 0.95, 0.82, 0.45, 0.05);
-        beam.add_color_stop_rgba(1.0, 0.90, 0.70, 0.30, 0.0);
-        cr.set_source(&beam).ok();
-
-        cr.new_sub_path();
-        cr.arc(lens_x, lens_y, beam_len, -0.98, -0.32);
-        cr.line_to(lens_x, lens_y);
-        cr.close_path();
-        cr.fill().ok();
-
-        let lens_glow = cairo::RadialGradient::new(lens_x, lens_y, 0.5, lens_x, lens_y, 7.0);
-        lens_glow.add_color_stop_rgba(0.0, 1.0, 0.98, 0.88, 1.0);
-        lens_glow.add_color_stop_rgba(0.5, 1.0, 0.92, 0.55, 0.85);
-        lens_glow.add_color_stop_rgba(1.0, 1.0, 0.85, 0.30, 0.0);
-        cr.set_source(&lens_glow).ok();
-        cr.arc(lens_x, lens_y, 7.0, 0.0, TAU);
-        cr.fill().ok();
-
-        cr.set_source_rgb(1.0, 0.98, 0.85);
-        cr.arc(lens_x, lens_y, 2.2, 0.0, TAU);
-        cr.fill().ok();
-    } else {
-        cr.set_source_rgba(0.25, 0.18, 0.10, 0.90);
-        cr.arc(lens_x, lens_y, 2.2, 0.0, TAU);
-        cr.fill().ok();
-    }
-}
-
-fn draw_pitch_fader(cr: &gtk::cairo::Context, layout: &TurntableLayout, pitch: f64) {
-    let px = layout.pitch_x;
-    let py = layout.pitch_y;
-    let pw = layout.pitch_w;
-    let ph = layout.pitch_h;
-    let center_y = py + ph / 2.0;
-    let slot_x = px + pw * 0.58;
-    let slot_h = ph - 28.0;
-
-    let led_x = px + 6.0;
-    let led_y = center_y;
-    let is_locked = pitch.abs() < 0.003;
-
-    if is_locked {
-        let led_glow = cairo::RadialGradient::new(led_x, led_y, 0.5, led_x, led_y, 6.5);
-        led_glow.add_color_stop_rgba(0.0, 0.30, 1.0, 0.55, 0.95);
-        led_glow.add_color_stop_rgba(0.5, 0.15, 0.90, 0.35, 0.50);
-        led_glow.add_color_stop_rgba(1.0, 0.10, 0.80, 0.25, 0.0);
-        cr.set_source(&led_glow).ok();
-        cr.arc(led_x, led_y, 6.5, 0.0, TAU);
-        cr.fill().ok();
-
-        cr.set_source_rgb(0.40, 1.0, 0.65);
-    } else {
-        cr.set_source_rgb(0.08, 0.25, 0.12);
-    }
-    cr.arc(led_x, led_y, 2.2, 0.0, TAU);
-    cr.fill().ok();
-
-    let knob_y = center_y - (pitch / 0.08) * (slot_h / 2.0 - 2.0);
-    let knob_w = 15.0;
-    let knob_h = 10.0;
-    let knob_x = slot_x - knob_w / 2.0;
-
-    cr.set_source_rgba(0.0, 0.0, 0.0, 0.45);
-    draw_rounded_rect(cr, knob_x + 1.0, knob_y - knob_h / 2.0 + 2.0, knob_w, knob_h, 1.5);
-    cr.fill().ok();
-
-    let knob_grad = cairo::LinearGradient::new(knob_x, knob_y - knob_h / 2.0, knob_x + knob_w, knob_y + knob_h / 2.0);
-    knob_grad.add_color_stop_rgba(0.0, 0.85, 0.86, 0.92, 1.0);
-    knob_grad.add_color_stop_rgba(0.4, 0.55, 0.54, 0.58, 1.0);
-    knob_grad.add_color_stop_rgba(0.8, 0.28, 0.27, 0.32, 1.0);
-    knob_grad.add_color_stop_rgba(1.0, 0.75, 0.74, 0.80, 1.0);
-    cr.set_source(&knob_grad).ok();
-    draw_rounded_rect(cr, knob_x, knob_y - knob_h / 2.0, knob_w, knob_h, 1.5);
-    cr.fill().ok();
-
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.35);
-    cr.set_line_width(0.7);
-    draw_rounded_rect(cr, knob_x, knob_y - knob_h / 2.0, knob_w, knob_h, 1.5);
-    cr.stroke().ok();
-
-    cr.set_source_rgba(0.1, 0.1, 0.12, 0.8);
-    cr.set_line_width(0.6);
-    cr.move_to(knob_x + 2.0, knob_y - 2.5);
-    cr.line_to(knob_x + knob_w - 2.0, knob_y - 2.5);
-    cr.move_to(knob_x + 2.0, knob_y + 2.5);
-    cr.line_to(knob_x + knob_w - 2.0, knob_y + 2.5);
-    cr.stroke().ok();
-
-    cr.set_source_rgb(1.0, 1.0, 1.0);
-    cr.set_line_width(1.3);
-    cr.move_to(knob_x + 1.5, knob_y);
-    cr.line_to(knob_x + knob_w - 1.5, knob_y);
-    cr.stroke().ok();
-}
-
-fn draw_volume_hud(cr: &gtk::cairo::Context, cx: f64, cy: f64, level: f64, alpha: f64) {
-    if alpha <= 0.005 {
-        return;
-    }
-
-    cr.save().ok();
-
-    // 1. Sombra ambiente suave / Ambient Glow em volta do HUD
-    let hud_r = 68.0;
-    let shadow = cairo::RadialGradient::new(cx, cy, hud_r - 4.0, cx, cy, hud_r + 16.0);
-    shadow.add_color_stop_rgba(0.0, 0.0, 0.0, 0.0, 0.55 * alpha);
-    shadow.add_color_stop_rgba(1.0, 0.0, 0.0, 0.0, 0.0);
-    cr.set_source(&shadow).ok();
-    cr.arc(cx, cy, hud_r + 16.0, 0.0, TAU);
-    cr.fill().ok();
-
-    // 2. Base de vidro escuro / Smoked Glass
-    let bg = cairo::RadialGradient::new(cx - 10.0, cy - 10.0, 2.0, cx, cy, hud_r);
-    bg.add_color_stop_rgba(0.0, 0.12, 0.10, 0.14, 0.92 * alpha);
-    bg.add_color_stop_rgba(0.7, 0.06, 0.05, 0.08, 0.94 * alpha);
-    bg.add_color_stop_rgba(1.0, 0.03, 0.02, 0.04, 0.96 * alpha);
-    cr.set_source(&bg).ok();
-    cr.arc(cx, cy, hud_r, 0.0, TAU);
-    cr.fill_preserve().ok();
-
-    // Borda metálica chanfrada com reflexo dourado
-    let border = cairo::LinearGradient::new(cx - hud_r, cy - hud_r, cx + hud_r, cy + hud_r);
-    border.add_color_stop_rgba(0.0, 0.95, 0.76, 0.22, 0.85 * alpha);
-    border.add_color_stop_rgba(0.5, 0.45, 0.35, 0.15, 0.40 * alpha);
-    border.add_color_stop_rgba(1.0, 0.95, 0.76, 0.22, 0.70 * alpha);
-    cr.set_source(&border).ok();
-    cr.set_line_width(1.8);
-    cr.stroke().ok();
-
-    // 3. Mostrador em Arco (Analog Dial Gauge de 270 graus: de 135° a 405°)
-    let start_angle = 0.75 * PI;
-    let total_arc = 1.5 * PI;
-    let track_r = 50.0;
-    let arc_width = 4.5;
-
-    // Trilho de fundo (apagado)
-    cr.set_source_rgba(0.24, 0.22, 0.28, 0.55 * alpha);
-    cr.set_line_width(arc_width);
-    cr.arc(cx, cy, track_r, start_angle, start_angle + total_arc);
-    cr.stroke().ok();
-
-    // Arco ativo (preenchido com gradiente âmbar/ouro)
-    let fill_angle = (level.clamp(0.0, 1.0) * total_arc).max(0.001);
-    let arc_grad = cairo::LinearGradient::new(cx - track_r, cy, cx + track_r, cy);
-    arc_grad.add_color_stop_rgba(0.0, 0.95, 0.70, 0.15, 0.95 * alpha);
-    arc_grad.add_color_stop_rgba(1.0, 1.00, 0.88, 0.35, 1.00 * alpha);
-    cr.set_source(&arc_grad).ok();
-    cr.set_line_width(arc_width + 0.5);
-    cr.set_line_cap(cairo::LineCap::Round);
-    cr.arc(cx, cy, track_r, start_angle, start_angle + fill_angle);
-    cr.stroke().ok();
-
-    // Marcador da ponta do arco (agulha / ponteiro luminoso)
-    let needle_rad = start_angle + fill_angle;
-    let tip_x = cx + track_r * needle_rad.cos();
-    let tip_y = cy + track_r * needle_rad.sin();
-    let tip_glow = cairo::RadialGradient::new(tip_x, tip_y, 0.5, tip_x, tip_y, 5.0);
-    tip_glow.add_color_stop_rgba(0.0, 1.0, 0.9, 0.4, 0.95 * alpha);
-    tip_glow.add_color_stop_rgba(1.0, 0.95, 0.7, 0.1, 0.0);
-    cr.set_source(&tip_glow).ok();
-    cr.arc(tip_x, tip_y, 5.0, 0.0, TAU);
-    cr.fill().ok();
-
-    // 4. Marcações analógicas (Notches / Ticks a cada 25% e no meio)
-    for i in 0..=10 {
-        let frac = i as f64 / 10.0;
-        let tick_ang = start_angle + frac * total_arc;
-        let is_major = i % 5 == 0;
-        let inner_r = if is_major {
-            track_r - 9.0
-        } else {
-            track_r - 6.0
-        };
-        let outer_r = track_r - 3.0;
-        let x1 = cx + inner_r * tick_ang.cos();
-        let y1 = cy + inner_r * tick_ang.sin();
-        let x2 = cx + outer_r * tick_ang.cos();
-        let y2 = cy + outer_r * tick_ang.sin();
-        if frac <= level {
-            cr.set_source_rgba(0.95, 0.80, 0.30, 0.85 * alpha);
-        } else {
-            cr.set_source_rgba(0.40, 0.36, 0.45, 0.40 * alpha);
-        }
-        cr.set_line_width(if is_major { 1.5 } else { 1.0 });
-        cr.move_to(x1, y1);
-        cr.line_to(x2, y2);
-        cr.stroke().ok();
-    }
-
-    // 5. Tipografia Vintage Hi-Fi
-    // Topo: "VOLUME" em dourado
-    cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
-    cr.set_font_size(8.5);
-    cr.set_source_rgba(0.95, 0.78, 0.25, 0.90 * alpha);
-    let vol_text = "VOLUME";
-    let vol_ext = cr.text_extents(vol_text).map(|e| e.width()).unwrap_or(40.0);
-    cr.move_to(cx - vol_ext / 2.0, cy - 14.0);
-    cr.show_text(vol_text).ok();
-
-    // Centro: Porcentagem destacada (ex: "75%")
-    cr.set_font_size(21.0);
-    cr.set_source_rgba(1.0, 0.98, 0.95, 0.96 * alpha);
-    let percent = (level.clamp(0.0, 1.0) * 100.0).round() as i32;
-    let pct_text = format!("{percent}%");
-    let pct_ext = cr
-        .text_extents(&pct_text)
-        .map(|e| e.width())
-        .unwrap_or(44.0);
-    cr.move_to(cx - pct_ext / 2.0, cy + 8.0);
-    cr.show_text(&pct_text).ok();
-
-    // Base: Decibéis / Status (ex: "-3.2 dB" ou "MUTE")
-    cr.set_font_size(8.0);
-    cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
-    let db_text = if percent == 0 {
-        "MUTE".to_string()
-    } else {
-        let db = 20.0 * level.max(0.001).log10();
-        format!("{db:+.1} dB")
-    };
-    cr.set_source_rgba(0.72, 0.70, 0.78, 0.80 * alpha);
-    let db_ext = cr.text_extents(&db_text).map(|e| e.width()).unwrap_or(36.0);
-    cr.move_to(cx - db_ext / 2.0, cy + 24.0);
-    cr.show_text(&db_text).ok();
-
-    cr.restore().ok();
-}
-
-fn draw_vu_background(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64) {
-    let r = 4.0;
-    // 1. Rebaixo metálico no chassi (sombra interna do recorte)
-    cr.set_source_rgba(0.02, 0.02, 0.03, 0.85);
-    draw_rounded_rect(cr, x - 1.0, y - 1.0, w + 2.0, h + 2.0, r + 1.0);
-    cr.fill().ok();
-
-    // 2. Borda chanfrada de alumínio escovado (bezel externo)
-    let bezel = cairo::LinearGradient::new(x, y, x, y + h);
-    bezel.add_color_stop_rgba(0.0, 0.35, 0.34, 0.38, 1.0);
-    bezel.add_color_stop_rgba(0.5, 0.18, 0.17, 0.20, 1.0);
-    bezel.add_color_stop_rgba(1.0, 0.28, 0.27, 0.30, 1.0);
-    cr.set_source(&bezel).ok();
-    draw_rounded_rect(cr, x, y, w, h, r);
-    cr.fill().ok();
-
-    // Friso metálico fino em volta do bezel
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.12);
-    cr.set_line_width(0.8);
-    draw_rounded_rect(cr, x, y, w, h, r);
-    cr.stroke().ok();
-
-    // 3. Mostradores Estéreo (Canal L e Canal R)
-    let dial_pad = 2.5;
-    let divider_w = 2.0;
-    let dial_w = (w - dial_pad * 2.0 - divider_w) / 2.0;
-    let dial_h = h - dial_pad * 2.0;
-    let dial_y = y + dial_pad;
-
-    for (ch_idx, &label) in ["L", "R"].iter().enumerate() {
-        let dial_x = x + dial_pad + ch_idx as f64 * (dial_w + divider_w);
-
-        // Fundo do mostrador: tom de pergaminho vintage / âmbar escuro analógico
-        let dial_bg = cairo::LinearGradient::new(dial_x, dial_y, dial_x, dial_y + dial_h);
-        dial_bg.add_color_stop_rgba(0.0, 0.15, 0.14, 0.13, 1.0);
-        dial_bg.add_color_stop_rgba(0.4, 0.21, 0.19, 0.16, 1.0);
-        dial_bg.add_color_stop_rgba(1.0, 0.11, 0.10, 0.09, 1.0);
-        cr.set_source(&dial_bg).ok();
-        draw_rounded_rect(cr, dial_x, dial_y, dial_w, dial_h, 2.0);
-        cr.fill().ok();
-
-        // Sombra suave na parte superior do vidro do mostrador
-        let glass_shadow = cairo::LinearGradient::new(dial_x, dial_y, dial_x, dial_y + 7.0);
-        glass_shadow.add_color_stop_rgba(0.0, 0.0, 0.0, 0.0, 0.45);
-        glass_shadow.add_color_stop_rgba(1.0, 0.0, 0.0, 0.0, 0.0);
-        cr.set_source(&glass_shadow).ok();
-        draw_rounded_rect(cr, dial_x, dial_y, dial_w, dial_h, 2.0);
-        cr.fill().ok();
-
-        // Escala em arco e divisões de decibéis
-        let pivot_x = dial_x + dial_w * 0.5;
-        let pivot_y = dial_y + dial_h + 8.0;
-        let arc_r = dial_h + 3.0;
-
-        let angle_start = -0.733; // -42 graus
-        let angle_0vu = -0.733 + 0.7079 * 1.466; // ~+17.5 graus
-        let angle_max = -0.733 + 1.466; // +42 graus
-
-        // Trilha normal (-20 a 0 VU)
-        cr.set_source_rgba(0.75, 0.70, 0.60, 0.75);
-        cr.set_line_width(0.9);
-        cr.arc(
-            pivot_x,
-            pivot_y,
-            arc_r,
-            -PI * 0.5 + angle_start,
-            -PI * 0.5 + angle_0vu,
-        );
-        cr.stroke().ok();
-
-        // Trilha de pico (0 a +3 dB VU) em vermelho vivo
-        cr.set_source_rgba(0.95, 0.22, 0.18, 0.90);
-        cr.set_line_width(1.3);
-        cr.arc(
-            pivot_x,
-            pivot_y,
-            arc_r,
-            -PI * 0.5 + angle_0vu,
-            -PI * 0.5 + angle_max,
-        );
-        cr.stroke().ok();
-
-        // Marcações (ticks) principais da escala
-        let ticks: &[(f64, bool)] = &[
-            (-80.0, true),
-            (-23.0, true),
-            (-13.0, true),
-            (-8.0, false),
-            (-6.0, true),
-            (-4.0, false),
-            (-3.0, true),
-            (-1.5, false),
-            (-0.8, false),
-            (0.0, true),
-        ];
-
-        for &(db, is_major) in ticks {
-            let def = crate::audio::db_to_vu_deflection(db);
-            let a = angle_start + def * 1.466;
-            let tick_len = if is_major { 3.2 } else { 1.8 };
-            let is_red = db >= -3.0;
-
-            if is_red {
-                cr.set_source_rgba(0.95, 0.22, 0.18, 0.90);
-                cr.set_line_width(if is_major { 1.0 } else { 0.7 });
-            } else {
-                cr.set_source_rgba(0.80, 0.75, 0.65, 0.75);
-                cr.set_line_width(if is_major { 0.8 } else { 0.5 });
-            }
-
-            let x1 = pivot_x + (arc_r - tick_len) * a.sin();
-            let y1 = pivot_y - (arc_r - tick_len) * a.cos();
-            let x2 = pivot_x + arc_r * a.sin();
-            let y2 = pivot_y - arc_r * a.cos();
-            cr.move_to(x1, y1);
-            cr.line_to(x2, y2);
-            cr.stroke().ok();
-        }
-
-        // Rótulo do Canal ("L" ou "R") no canto superior
-        cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
-        cr.set_font_size(6.8);
-        cr.set_source_rgba(0.90, 0.85, 0.70, 0.75);
-        cr.move_to(dial_x + 3.5, dial_y + 8.5);
-        cr.show_text(label).ok();
-
-        // Rótulo "VU" no centro inferior
-        cr.set_font_size(5.6);
-        cr.set_source_rgba(0.80, 0.75, 0.65, 0.55);
-        cr.move_to(pivot_x - 4.5, dial_y + dial_h - 2.5);
-        cr.show_text("VU").ok();
-    }
-
-    // Divisor metálico central
-    let div_x = x + dial_pad + dial_w;
-    cr.set_source_rgba(0.08, 0.08, 0.10, 0.95);
-    cr.rectangle(div_x, dial_y, divider_w, dial_h);
-    cr.fill().ok();
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.08);
-    cr.move_to(div_x + 1.0, dial_y);
-    cr.line_to(div_x + 1.0, dial_y + dial_h);
-    cr.set_line_width(0.6);
-    cr.stroke().ok();
-}
-
-fn draw_vu_meters(
-    cr: &gtk::cairo::Context,
-    layout: &TurntableLayout,
-    needle_l: f64,
-    needle_r: f64,
-    is_playing: bool,
-) {
-    let x = layout.vu_x;
-    let y = layout.vu_y;
-    let w = layout.vu_w;
-    let h = layout.vu_h;
-    let dial_pad = 2.5;
-    let divider_w = 2.0;
-    let dial_w = (w - dial_pad * 2.0 - divider_w) / 2.0;
-    let dial_h = h - dial_pad * 2.0;
-    let dial_y = y + dial_pad;
-
-    for (ch_idx, &deflection) in [needle_l, needle_r].iter().enumerate() {
-        let dial_x = x + dial_pad + ch_idx as f64 * (dial_w + divider_w);
-        let pivot_x = dial_x + dial_w * 0.5;
-        let pivot_y = dial_y + dial_h + 8.0;
-        let needle_len = dial_h + 4.5;
-
-        // 1. Backlight dinâmico incandescente vintage
-        if is_playing {
-            let glow = cairo::RadialGradient::new(
-                pivot_x,
-                dial_y + 4.0,
-                2.0,
-                pivot_x,
-                dial_y + 12.0,
-                dial_w * 0.7,
-            );
-            glow.add_color_stop_rgba(0.0, 1.00, 0.88, 0.45, 0.35);
-            glow.add_color_stop_rgba(0.6, 0.95, 0.70, 0.20, 0.15);
-            glow.add_color_stop_rgba(1.0, 0.85, 0.50, 0.10, 0.0);
-            cr.set_source(&glow).ok();
-            draw_rounded_rect(cr, dial_x, dial_y, dial_w, dial_h, 2.0);
-            cr.fill().ok();
-        }
-
-        // 2. Ponteiro Balístico Móvel
-        let angle_start = -0.733; // -42 graus
-        let a = angle_start + deflection.clamp(0.0, 1.08) * 1.466;
-
-        let tip_x = pivot_x + needle_len * a.sin();
-        let tip_y = pivot_y - needle_len * a.cos();
-
-        // Sombra projetada da agulha no mostrador
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.35);
-        cr.set_line_width(0.9);
-        cr.move_to(pivot_x + 0.8, pivot_y + 0.8);
-        cr.line_to(tip_x + 0.8, tip_y + 0.8);
-        cr.stroke().ok();
-
-        // Corpo da agulha
-        let is_overload = deflection >= 0.708; // Acima de 0 VU entra na zona vermelha
-        if is_overload {
-            cr.set_source_rgb(0.95, 0.20, 0.18);
-        } else {
-            cr.set_source_rgb(0.12, 0.11, 0.14);
-        }
-        cr.set_line_width(0.9);
-        cr.move_to(pivot_x, pivot_y);
-        cr.line_to(tip_x, tip_y);
-        cr.stroke().ok();
-
-        // Calota metálica preta/latão do pivô inferior
-        cr.set_source_rgb(0.08, 0.08, 0.10);
-        cr.arc(pivot_x, dial_y + dial_h - 1.0, 3.2, 0.0, TAU);
-        cr.fill().ok();
-
-        cr.set_source_rgba(0.85, 0.75, 0.35, 0.80);
-        cr.arc(pivot_x, dial_y + dial_h - 1.0, 1.5, 0.0, TAU);
-        cr.fill().ok();
-    }
-}
-
-fn draw_rounded_rect(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
-    cr.new_sub_path();
-    cr.arc(x + w - r, y + r, r, -PI / 2.0, 0.0);
-    cr.arc(x + w - r, y + h - r, r, 0.0, PI / 2.0);
-    cr.arc(x + r, y + h - r, r, PI / 2.0, PI);
-    cr.arc(x + r, y + r, r, PI, 3.0 * PI / 2.0);
-    cr.close_path();
-}
-
 fn update_shuffle_btn(btn: &gtk::Button, active: bool) {
     if active {
         btn.add_css_class("active");
@@ -5534,9 +2464,46 @@ fn player_bar(
     let left_group = gtk::Box::new(Orientation::Horizontal, 12);
     left_group.set_width_request(220);
 
+    let cover_stack = gtk::Stack::new();
+    cover_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+    cover_stack.set_transition_duration(150);
+    cover_stack.set_width_request(48);
+    cover_stack.set_height_request(48);
+    cover_stack.set_overflow(gtk::Overflow::Hidden);
+    cover_stack.add_css_class("mini-cover-container");
+
     let mini_disc = gtk::Image::from_icon_name("media-optical-symbolic");
-    mini_disc.set_pixel_size(28);
+    mini_disc.set_pixel_size(26);
     mini_disc.add_css_class("mini-disc-icon");
+    cover_stack.add_named(&mini_disc, Some("placeholder"));
+
+    let mini_picture = gtk::Picture::new();
+    mini_picture.set_content_fit(gtk::ContentFit::Cover);
+    mini_picture.set_can_shrink(true);
+    mini_picture.add_css_class("mini-cover-picture");
+    cover_stack.add_named(&mini_picture, Some("cover"));
+    cover_stack.set_visible_child_name("placeholder");
+
+    let last_cover_key = Rc::new(RefCell::new(String::new()));
+    let init_m = audio.metadata();
+    if let Some(ref p) = init_m.cover_path {
+        if let Some(pixbuf) = thumb_cache::load_cached_thumbnail(p, 128) {
+            let texture = gdk::Texture::for_pixbuf(&pixbuf);
+            mini_picture.set_paintable(Some(&texture));
+            cover_stack.set_visible_child_name("cover");
+            *last_cover_key.borrow_mut() = format!("path:{}", p.display());
+        }
+    } else if let Some(ref b) = init_m.cover_bytes {
+        let loader = gdk_pixbuf::PixbufLoader::new();
+        if loader.write(b).is_ok() && loader.close().is_ok() {
+            if let Some(pixbuf) = loader.pixbuf() {
+                let texture = gdk::Texture::for_pixbuf(&pixbuf);
+                mini_picture.set_paintable(Some(&texture));
+                cover_stack.set_visible_child_name("cover");
+                *last_cover_key.borrow_mut() = format!("bytes:{}", b.len());
+            }
+        }
+    }
 
     let text_group = gtk::Box::new(Orientation::Vertical, 2);
     text_group.set_valign(gtk::Align::Center);
@@ -5555,7 +2522,7 @@ fn player_bar(
     text_group.append(&title_lbl);
     text_group.append(&artist_lbl);
 
-    left_group.append(&mini_disc);
+    left_group.append(&cover_stack);
     left_group.append(&text_group);
     bar.append(&left_group);
 
@@ -5717,6 +2684,9 @@ fn player_bar(
     let tick_vol = vol.clone();
     let tick_title = title_lbl.clone();
     let tick_artist = artist_lbl.clone();
+    let tick_cover_stack = cover_stack.clone();
+    let tick_mini_picture = mini_picture.clone();
+    let tick_last_cover_key = last_cover_key.clone();
     let tick_toggle = toggle.clone();
     let tick_playing = playing.clone();
     let tick_badge = quality_badge.clone();
@@ -5801,6 +2771,41 @@ fn player_bar(
             } else {
                 tick_title.set_text("Nenhuma faixa carregada");
                 tick_artist.set_text("VinylPlayer");
+            }
+
+            // Atualização dinâmica da mini capa do álbum no player bar
+            let cover_key = if let Some(ref p) = m.cover_path {
+                format!("path:{}", p.display())
+            } else if let Some(ref b) = m.cover_bytes {
+                format!("bytes:{}", b.len())
+            } else {
+                "none".to_string()
+            };
+
+            let mut lck = tick_last_cover_key.borrow_mut();
+            if *lck != cover_key {
+                *lck = cover_key;
+                let pb = if let Some(ref p) = m.cover_path {
+                    thumb_cache::load_cached_thumbnail(p, 128)
+                } else if let Some(ref b) = m.cover_bytes {
+                    let loader = gdk_pixbuf::PixbufLoader::new();
+                    if loader.write(b).is_ok() && loader.close().is_ok() {
+                        loader.pixbuf()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(pixbuf) = pb {
+                    let texture = gdk::Texture::for_pixbuf(&pixbuf);
+                    tick_mini_picture.set_paintable(Some(&texture));
+                    tick_cover_stack.set_visible_child_name("cover");
+                } else {
+                    tick_mini_picture.set_paintable(None::<&gdk::Texture>);
+                    tick_cover_stack.set_visible_child_name("placeholder");
+                }
             }
 
             let is_hires = m.bit_depth.map(|d| d >= 24).unwrap_or(false)
@@ -5965,15 +2970,18 @@ fn player_bar(
                     std::thread::Builder::new()
                         .name("lastfm-scrobbler".into())
                         .spawn(move || {
+                            let payload = crate::scrobbler::ScrobblePayload {
+                                artist: &artist,
+                                track: &track,
+                                album: album.as_deref(),
+                                timestamp: ts,
+                                duration_sec: Some(dur),
+                            };
                             if let Err(e) = crate::scrobbler::scrobble_track(
                                 &api_key,
                                 &api_secret,
                                 &sk,
-                                &artist,
-                                &track,
-                                album.as_deref(),
-                                ts,
-                                Some(dur),
+                                &payload,
                             ) {
                                 eprintln!("[Last.fm] Scrobble error: {e}");
                             }
@@ -6162,9 +3170,17 @@ fn install_css() {
         .open-button box, .open-button label, .open-button image { color: inherit; }
         .open-button:hover { background: #e3c391; border-color: #e3c391; }
         .player-bar { background: #1b1c1e; border-top: 1px solid #353639; padding: 14px 24px; }
+        .mini-cover-container {
+            border-radius: 10px;
+            border: 1px solid #494033; background: #22201d;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+        }
+        .mini-cover-picture {
+            border-radius: 9px;
+        }
         .mini-disc-icon {
-            color: #d5b17b; background: #292722; border: 1px solid #494033;
-            border-radius: 10px; padding: 11px;
+            color: #d5b17b; background: #292722;
+            border-radius: 9px; padding: 11px;
         }
         .bottom-track-title { font-size: 13px; font-weight: 600; color: #f0ede6; }
         .bottom-artist-title { font-size: 11px; color: #989a9e; margin-top: 4px; }
@@ -6204,7 +3220,11 @@ fn install_css() {
         .badge-hires { background: #393123; color: #e1bd7f; }
         .badge-hifi { background: #25352f; color: #9ccbb6; }
         .badge-standard { background: #303237; color: #babdc3; }
-        .library-list { background: transparent; margin-top: 12px; }
+        .library-list { background: transparent; padding-top: 2px; }
+        .version-badge {
+            background: #302b24; color: #dfc08d; font-size: 10px; font-weight: 700;
+            letter-spacing: 0.5px; padding: 2px 7px; border-radius: 6px; border: 1px solid #4a3f31;
+        }
         .sort-dropdown {
             background: #202123; border: 1px solid #34363a; border-radius: 9px;
             color: #d9dadc; font-size: 12px; font-weight: 500;
@@ -6314,3 +3334,6 @@ fn install_css() {
         gtk::STYLE_PROVIDER_PRIORITY_USER + 1,
     );
 }
+
+#[cfg(test)]
+mod animation_tests;

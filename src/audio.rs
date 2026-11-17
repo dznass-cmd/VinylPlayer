@@ -744,56 +744,102 @@ fn make_audio_sink() -> Result<gst::Element> {
 
 pub(crate) fn find_cover(path: &Path) -> Option<PathBuf> {
     let dir = path.parent()?;
-    let common_names = [
-        "cover", "folder", "front", "album", "artwork", "art", "Cover", "Folder", "Front", "Album",
-        "Artwork", "Art",
-    ];
-    let extensions = ["jpg", "jpeg", "png", "webp", "JPG", "JPEG", "PNG", "WEBP"];
 
-    for name in &common_names {
-        for ext in &extensions {
-            let candidate = dir.join(format!("{name}.{ext}"));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    // Procura por qualquer imagem no diretório
+    // 1. Um único read_dir no diretório para achar capas locais sem disparar dezenas de syscalls de stat
     if let Ok(entries) = std::fs::read_dir(dir) {
+        let mut priority_match = None;
+        let mut fallback_match = None;
+        let priority_names = ["cover", "folder", "front", "album", "artwork", "art"];
+
         for entry in entries.flatten() {
             let p = entry.path();
-            if p.is_file() {
-                if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
-                    let ext_lower = ext.to_lowercase();
-                    if ["jpg", "jpeg", "png", "webp"].contains(&ext_lower.as_str()) {
-                        return Some(p);
-                    }
-                }
+            if !p.is_file() {
+                continue;
             }
+            let Some(ext) = p.extension().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let ext_lower = ext.to_ascii_lowercase();
+            if !matches!(ext_lower.as_str(), "jpg" | "jpeg" | "png" | "webp") {
+                continue;
+            }
+            let stem = p
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if priority_names.contains(&stem.as_str()) {
+                priority_match = Some(p);
+                break;
+            } else if fallback_match.is_none() {
+                fallback_match = Some(p);
+            }
+        }
+
+        if let Some(cover) = priority_match.or(fallback_match) {
+            return Some(cover);
         }
     }
 
-    // Se for arquivo FLAC e não houver imagem solta na pasta, extrai metadado de imagem embutida
+    // 2. Se for arquivo FLAC e não houver imagem solta na pasta, extrai metadado de imagem embutida
+    // usando cache persistente em ~/.cache/vinylplayer/extracted-covers/ para nunca re-executar metaflac
     if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
         if ext.eq_ignore_ascii_case("flac") {
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
+
+            let cache_dir = glib::user_cache_dir()
+                .join("vinylplayer")
+                .join("extracted-covers");
+            let _ = std::fs::create_dir_all(&cache_dir);
+
+            let mtime = std::fs::metadata(path)
+                .and_then(|m| m.modified())
+                .map(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                })
+                .unwrap_or(0);
+
             let mut hasher = DefaultHasher::new();
             path.hash(&mut hasher);
-            let out = std::env::temp_dir().join(format!("vinyl_cover_{:x}.jpg", hasher.finish()));
+            mtime.hash(&mut hasher);
+            let out = cache_dir.join(format!("{:016x}.jpg", hasher.finish()));
+
             if out.is_file() {
                 return Some(out);
             }
+
+            // Migra cópia temporária de /tmp caso já tenha sido extraída anteriormente
+            let mut legacy_hasher = DefaultHasher::new();
+            path.hash(&mut legacy_hasher);
+            let legacy_out =
+                std::env::temp_dir().join(format!("vinyl_cover_{:x}.jpg", legacy_hasher.finish()));
+            if legacy_out.is_file() {
+                if std::fs::copy(&legacy_out, &out).is_ok() {
+                    return Some(out);
+                }
+                return Some(legacy_out);
+            }
+
+            // Extração sob demanda via metaflac com arquivo temporário e rename atômico
+            let tmp_out = cache_dir.join(format!(
+                "{:016x}.tmp.{}",
+                hasher.finish(),
+                std::process::id()
+            ));
             if let Ok(status) = std::process::Command::new("metaflac")
-                .arg(format!("--export-picture-to={}", out.display()))
+                .arg(format!("--export-picture-to={}", tmp_out.display()))
                 .arg(path)
                 .status()
             {
-                if status.success() && out.is_file() {
+                if status.success() && tmp_out.is_file() {
+                    let _ = std::fs::rename(&tmp_out, &out);
                     return Some(out);
                 }
             }
+            let _ = std::fs::remove_file(&tmp_out);
         }
     }
 

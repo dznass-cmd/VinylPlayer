@@ -6,6 +6,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+type FailedPlaybackIdentity = (u64, u64, Option<usize>, String);
+
 #[derive(Clone)]
 pub struct ErrorPresenter(Rc<Inner>);
 
@@ -13,7 +15,7 @@ struct Inner {
     audio: Arc<AudioEngine>,
     parent: glib::WeakRef<gtk::Window>,
     dialog: RefCell<glib::WeakRef<libadwaita::MessageDialog>>,
-    failed: RefCell<Option<(u64, u64, Option<usize>, String)>>,
+    failed: RefCell<Option<FailedPlaybackIdentity>>,
 }
 
 impl ErrorPresenter {

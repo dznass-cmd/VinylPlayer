@@ -3,12 +3,14 @@ use std::path::Path;
 use std::rc::Rc;
 use crate::library::AlbumMetadata;
 
+pub type SearchCallback = Rc<dyn Fn()>;
+
 /// Hub reativo para gerenciar a consulta de busca em tempo real entre diferentes
 /// visões da interface gráfica.
 #[derive(Clone, Default)]
 pub struct SearchHub {
     query: Rc<RefCell<String>>,
-    callbacks: Rc<RefCell<Vec<Rc<dyn Fn()>>>>,
+    callbacks: Rc<RefCell<Vec<SearchCallback>>>,
 }
 
 impl SearchHub {

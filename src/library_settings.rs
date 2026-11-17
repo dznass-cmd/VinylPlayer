@@ -1,5 +1,5 @@
 //! Configuração de pastas e coordenação de uma única leitura em segundo plano.
-use crate::{library_sources, state::StateManager};
+use crate::{library_sources, state::StateManager, theme::{self, Theme}};
 use gtk::glib;
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -18,9 +18,20 @@ pub struct Catalog {
 
 impl Catalog {
     pub fn new(state: StateManager) -> Rc<Self> {
+        let roots = state.snapshot().library_roots();
+        let cache_path = state.library_cache_path();
+        let cached_tracks = library_sources::CachedLibrary::load_from(&cache_path, &roots);
+        let initial_report = if let Some(tracks) = cached_tracks {
+            library_sources::ScanReport {
+                tracks,
+                warnings: Vec::new(),
+            }
+        } else {
+            library_sources::ScanReport::default()
+        };
         Rc::new(Self {
             state,
-            report: RefCell::new(Default::default()),
+            report: RefCell::new(initial_report),
             scanning: Cell::new(false),
             generation: Cell::new(0),
             listeners: RefCell::new(Vec::new()),
@@ -58,9 +69,11 @@ impl Catalog {
         self.notify();
         let generation = self.generation.get();
         let roots = self.state.snapshot().library_roots();
+        let cache_path = self.state.library_cache_path();
         let weak = Rc::downgrade(self);
+        let scan_roots = roots.clone();
         glib::MainContext::default().spawn_local(async move {
-            let result = gtk::gio::spawn_blocking(move || library_sources::scan(&roots)).await;
+            let result = gtk::gio::spawn_blocking(move || library_sources::scan(&scan_roots)).await;
             let Some(catalog) = weak.upgrade() else {
                 return;
             };
@@ -70,10 +83,12 @@ impl Catalog {
                 catalog.launch();
                 return;
             }
-            *catalog.report.borrow_mut() = result.unwrap_or_else(|_| library_sources::ScanReport {
+            let new_report = result.unwrap_or_else(|_| library_sources::ScanReport {
                 tracks: Vec::new(),
                 warnings: vec!["Could not read folders. Try refreshing again.".into()],
             });
+            library_sources::CachedLibrary::save_to(&cache_path, &roots, &new_report.tracks);
+            *catalog.report.borrow_mut() = new_report;
             catalog.notify();
         });
     }
@@ -106,7 +121,7 @@ impl Catalog {
     }
 
     pub fn summary(&self) -> String {
-        if self.scanning.get() {
+        if self.scanning.get() && self.report.borrow().tracks.is_empty() {
             "Reading library folders…".into()
         } else {
             let report = self.report.borrow();
@@ -123,11 +138,11 @@ impl Catalog {
 
 pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Window {
     let window = gtk::Window::builder()
-        .title("Settings & Library Folders")
+        .title(format!("Settings & Library Folders (v{})", env!("CARGO_PKG_VERSION")))
         .transient_for(parent)
         .destroy_with_parent(true)
         .default_width(620)
-        .default_height(580)
+        .default_height(640)
         .build();
     let body = gtk::Box::new(gtk::Orientation::Vertical, 14);
     window.add_css_class("library-settings");
@@ -136,7 +151,7 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     body.set_margin_bottom(22);
     body.set_margin_start(22);
     body.set_margin_end(22);
-    let title = gtk::Label::new(Some("Your collection, your folders"));
+    let title = gtk::Label::new(Some(&format!("Your collection, your folders · v{}", env!("CARGO_PKG_VERSION"))));
     title.add_css_class("page-title");
     title.set_xalign(0.0);
     title.set_hexpand(true);
@@ -186,6 +201,99 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
         .child(&list)
         .build();
     body.append(&scroll);
+
+    // Seção de Tema de Cores / Interface Theme
+    let theme_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    theme_box.set_margin_top(12);
+    theme_box.set_margin_bottom(6);
+
+    let theme_title = gtk::Label::new(Some("Interface Theme · Tema de Cores"));
+    theme_title.add_css_class("system-audio-title");
+    theme_title.set_xalign(0.0);
+    theme_box.append(&theme_title);
+
+    let theme_hint = gtk::Label::new(Some("Choose an analog accent palette for controls, dials, and highlights:"));
+    theme_hint.set_xalign(0.0);
+    theme_hint.add_css_class("bottom-artist-title");
+    theme_box.append(&theme_hint);
+
+    let theme_grid = gtk::Grid::builder()
+        .column_spacing(10)
+        .row_spacing(8)
+        .hexpand(true)
+        .build();
+
+    let current_theme_id = catalog.state.snapshot().theme().to_string();
+    let theme_buttons: Rc<RefCell<Vec<(Theme, gtk::Button, gtk::Label)>>> = Rc::new(RefCell::new(Vec::new()));
+
+    for (idx, &theme) in Theme::ALL.iter().enumerate() {
+        let btn = gtk::Button::new();
+        btn.add_css_class("theme-btn");
+        btn.set_hexpand(true);
+        btn.set_tooltip_text(Some(theme.description()));
+
+        let row_content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+
+        let swatch = gtk::DrawingArea::new();
+        swatch.set_content_width(16);
+        swatch.set_content_height(16);
+        swatch.set_valign(gtk::Align::Center);
+        let (r, g, b) = theme.accent_rgb();
+        swatch.set_draw_func(move |_, cr, w, h| {
+            let radius = (w.min(h) as f64 / 2.0) - 1.0;
+            cr.arc(w as f64 / 2.0, h as f64 / 2.0, radius, 0.0, 2.0 * std::f64::consts::PI);
+            cr.set_source_rgb(r, g, b);
+            let _ = cr.fill_preserve();
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.25);
+            cr.set_line_width(1.0);
+            let _ = cr.stroke();
+        });
+        row_content.append(&swatch);
+
+        let label = gtk::Label::new(Some(theme.label()));
+        label.set_xalign(0.0);
+        label.set_hexpand(true);
+        row_content.append(&label);
+
+        let check = gtk::Label::new(Some("✓"));
+        check.add_css_class("theme-btn-check");
+        let is_active = theme.id() == current_theme_id;
+        check.set_visible(is_active);
+        if is_active {
+            btn.add_css_class("active");
+        }
+        row_content.append(&check);
+
+        btn.set_child(Some(&row_content));
+
+        let col = (idx % 3) as i32;
+        let row = (idx / 3) as i32;
+        theme_grid.attach(&btn, col, row, 1, 1);
+
+        theme_buttons.borrow_mut().push((theme, btn.clone(), check));
+
+        let state_mgr = catalog.state.clone();
+        let all_btns = theme_buttons.clone();
+        btn.connect_clicked(move |_| {
+            theme::apply_theme(theme);
+            state_mgr.update_theme(theme.id().to_string());
+            state_mgr.flush_if_dirty();
+
+            for (t, b, chk) in all_btns.borrow().iter() {
+                let active = *t == theme;
+                if active {
+                    b.add_css_class("active");
+                    chk.set_visible(true);
+                } else {
+                    b.remove_css_class("active");
+                    chk.set_visible(false);
+                }
+            }
+        });
+    }
+
+    theme_box.append(&theme_grid);
+    body.append(&theme_box);
 
     let analog_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
     analog_box.set_margin_top(10);
@@ -345,9 +453,9 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
                     Ok(Ok(token)) => {
                         let auth_url = crate::scrobbler::authorization_url(&api_key, &token);
                         if let Some(win) = weak_w_clone.upgrade() {
-                            let _ = gtk::show_uri(Some(&win), &auth_url, gtk::gdk::CURRENT_TIME);
+                            gtk::show_uri(Some(&win), &auth_url, gtk::gdk::CURRENT_TIME);
                         } else {
-                            let _ = gtk::show_uri(None::<&gtk::Window>, &auth_url, gtk::gdk::CURRENT_TIME);
+                            gtk::show_uri(None::<&gtk::Window>, &auth_url, gtk::gdk::CURRENT_TIME);
                         }
                         *token_cb.borrow_mut() = Some(token);
                         update_cb();
@@ -411,7 +519,12 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     warnings.set_xalign(0.0);
     warnings.add_css_class("queue-error");
     body.append(&warnings);
-    window.set_child(Some(&body));
+    let scroll_body = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .child(&body)
+        .build();
+    window.set_child(Some(&scroll_body));
     let weak_list = list.downgrade();
     let weak_status = status.downgrade();
     let weak_warnings = warnings.downgrade();

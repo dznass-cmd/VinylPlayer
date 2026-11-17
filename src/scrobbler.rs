@@ -178,31 +178,36 @@ pub fn update_now_playing(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+pub struct ScrobblePayload<'a> {
+    pub artist: &'a str,
+    pub track: &'a str,
+    pub album: Option<&'a str>,
+    pub timestamp: u64,
+    pub duration_sec: Option<u64>,
+}
+
 /// Envia o Scrobble de uma faixa tocada para a Last.fm.
 pub fn scrobble_track(
     api_key: &str,
     api_secret: &str,
     session_key: &str,
-    artist: &str,
-    track: &str,
-    album: Option<&str>,
-    timestamp: u64,
-    duration_sec: Option<u64>,
+    payload: &ScrobblePayload<'_>,
 ) -> Result<(), String> {
-    let ts_str = timestamp.to_string();
+    let ts_str = payload.timestamp.to_string();
     let dur_str;
     let mut params: Vec<(&str, &str)> = vec![
         ("method", "track.scrobble"),
         ("api_key", api_key),
         ("sk", session_key),
-        ("artist", artist),
-        ("track", track),
+        ("artist", payload.artist),
+        ("track", payload.track),
         ("timestamp", &ts_str),
     ];
-    if let Some(alb) = album.filter(|a| !a.is_empty()) {
+    if let Some(alb) = payload.album.filter(|a| !a.is_empty()) {
         params.push(("album", alb));
     }
-    if let Some(dur) = duration_sec.filter(|d| *d > 0) {
+    if let Some(dur) = payload.duration_sec.filter(|d| *d > 0) {
         dur_str = dur.to_string();
         params.push(("duration", &dur_str));
     }

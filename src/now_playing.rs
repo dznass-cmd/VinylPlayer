@@ -101,11 +101,14 @@ pub fn sync(uri: &str, state: PlaybackState) {
         registry.last = Some((uri.to_owned(), state));
         let path = glib::filename_from_uri(uri).ok().map(|(path, _)| path);
         registry.entries.retain_mut(|marker| {
+            let mode = mode_for(&marker.target, path.as_deref(), state);
+            if mode == marker.mode && marker.mode == Mode::None {
+                return true;
+            }
             let (Some(button), Some(icon)) = (marker.button.upgrade(), marker.icon.upgrade())
             else {
                 return false;
             };
-            let mode = mode_for(&marker.target, path.as_deref(), state);
             if mode == marker.mode {
                 return true;
             }

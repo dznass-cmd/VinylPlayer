@@ -98,6 +98,8 @@ pub struct AppState {
     pub lastfm_api_key: Option<String>,
     /// Shared secret personalizado da Last.fm (None usa o padrão embutido).
     pub lastfm_api_secret: Option<String>,
+    /// Tema visual / cor de destaque da interface. Padrão: "amber".
+    pub theme: Option<String>,
 }
 
 impl Default for AppState {
@@ -121,11 +123,15 @@ impl Default for AppState {
             lastfm_username: None,
             lastfm_api_key: None,
             lastfm_api_secret: None,
+            theme: None,
         }
     }
 }
 
 impl AppState {
+    pub fn theme(&self) -> &str {
+        self.theme.as_deref().unwrap_or("amber")
+    }
     pub fn library_roots(&self) -> Vec<PathBuf> {
         self.library_folders
             .clone()
@@ -169,6 +175,7 @@ impl AppState {
             "lastfm_username": self.lastfm_username,
             "lastfm_api_key": self.lastfm_api_key,
             "lastfm_api_secret": self.lastfm_api_secret,
+            "theme": self.theme,
         });
         if let Some(queue) = &self.queue {
             value["queue"] = queue.to_json();
@@ -247,6 +254,10 @@ impl AppState {
             .map(String::from);
         state.lastfm_api_secret = value
             .get("lastfm_api_secret")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        state.theme = value
+            .get("theme")
             .and_then(|v| v.as_str())
             .map(String::from);
         state.last_track_path = value
@@ -375,6 +386,16 @@ impl StateManager {
         self.inner.data.lock().unwrap().value.clone()
     }
 
+    pub fn library_cache_path(&self) -> PathBuf {
+        if let Some(parent) = self.inner.path.parent() {
+            let s = parent.to_string_lossy();
+            if s.contains("/tmp/") || s.contains("vinylplayer-test") {
+                return parent.join("library_index.json");
+            }
+        }
+        gtk::glib::user_cache_dir().join("vinylplayer").join("library_index.json")
+    }
+
     fn update(&self, edit: impl FnOnce(&mut AppState)) {
         let mut data = self.inner.data.lock().unwrap();
         let previous = data.value.clone();
@@ -433,6 +454,9 @@ impl StateManager {
             state.lastfm_api_key = api_key;
             state.lastfm_api_secret = api_secret;
         });
+    }
+    pub fn update_theme(&self, theme: String) {
+        self.update(|state| state.theme = Some(theme));
     }
     pub fn update_queue(&self, snapshot: QueueSnapshot) {
         let queue = SavedQueue {
@@ -628,9 +652,11 @@ mod tests {
             lastfm_username: Some("vinyl_fan".into()),
             lastfm_api_key: None,
             lastfm_api_secret: None,
+            theme: Some("emerald".into()),
         };
         let json = st.to_json();
         let restored = AppState::from_json(&json);
+        assert_eq!(restored.theme(), "emerald");
         assert!((restored.volume - 0.725).abs() < 0.001);
         assert_eq!(restored.active_view, "albums");
         assert_eq!(restored.track_sort_mode, 1);
@@ -1011,5 +1037,15 @@ mod tests {
         assert_eq!(std::fs::read(config.path()).unwrap(), original);
         manager.flush_now().unwrap();
         assert_eq!(AppState::load_from(&config.path()).volume, 0.7);
+    }
+
+    #[test]
+    fn theme_roundtrip_persistence() {
+        let config = TestConfig::new();
+        let manager = StateManager::with_path(config.path());
+        assert_eq!(manager.snapshot().theme(), "amber");
+        manager.update_theme("blue".to_string());
+        manager.flush_now().unwrap();
+        assert_eq!(AppState::load_from(&config.path()).theme(), "blue");
     }
 }

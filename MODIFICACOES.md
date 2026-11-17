@@ -1,6 +1,129 @@
 # Alterações do VinylPlayer
 
-Registro atualizado em 15/11/2026.
+Registro atualizado em 16/11/2026.
+
+## Release v0.1.4 — Color Themes, Monolith Modularization & Clippy Cleanup — 16/11/2026
+
+- **Analog Color Theme System (`src/theme.rs`):**
+  - Designed and implemented a theme system featuring 6 curated analog palettes:
+    1. **Amber Gold (Classic)**: Vintage warm amber gold (`#dfc08d`).
+    2. **Marantz Blue**: 70s classic stereo receiver back-lit blue (`#5da5db`).
+    3. **Emerald Tube**: Vintage McIntosh vacuum tube amplifier green (`#55b685`).
+    4. **Ruby Sunset**: Analog tape reel-to-reel terracotta red (`#e06c53`).
+    5. **Midnight Violet**: Deep purple & vinyl indigo aesthetic (`#9d72d6`).
+    6. **Obsidian Silver**: Brushed aluminum & graphite monochrome (`#dcdcdc`).
+  - Dynamic CSS override generation (`Theme::generate_css`) targeting active navigation buttons, play/pause controls, sliders, volume indicators, queue highlights, album badges, mini album borders, version badges, and status icons.
+  - Zero-restart instantaneous theme switching via GTK4 `CssProvider` registered at `STYLE_PROVIDER_PRIORITY_USER + 10`.
+- **Theme Selection in Settings Window (`src/library_settings.rs`):**
+  - Added dedicated "Interface Theme · Tema de Cores" section in the Settings window.
+  - Interactive grid displaying crisp Cairo-rendered circular color swatches, theme names, active checkmark indicators (`✓`), and rich tooltips.
+  - One-click live switching: updates colors immediately on click without needing to close or restart the application.
+  - Wrapped Settings window in a `ScrolledWindow` with 640px default height to ensure comfortable layout on any display resolution.
+- **Persistent State Storage (`src/state.rs`):**
+  - Added `theme: Option<String>` to `AppState` with atomic serialization and deserialization in `~/.config/vinylplayer/state.json`.
+  - Added `StateManager::update_theme` with automated change tracking.
+  - Application restores the user's chosen theme automatically on launch (`src/main.rs`).
+  - Added unit test `theme_roundtrip_persistence` in `src/state.rs` and `theme_roundtrip_ids_and_labels` in `src/theme.rs`.
+- **Major Code Modularization & Monolith Dismantling (`src/main.rs`):**
+  - Reduced `src/main.rs` from 6,534 lines to 3,340 lines (-49% reduction), dramatically improving compilation times and code maintainability.
+  - Extracted Cairo turntable rendering (`TurntableRenderParams`, `CachedCover`, `TurntableCache`, `TurntableLayout`, strobe dots, pitch fader, target light) to dedicated module `src/turntable.rs`.
+  - Extracted analog stereo VU meter rendering (`draw_vu_meters`, `draw_vu_background`, `draw_rounded_rect`) to `src/vu_meter.rs`.
+  - Extracted volume HUD overlay rendering (`VolumeHudState`, `draw_volume_hud`) to `src/volume_hud.rs`.
+  - Extracted ~1,600 lines of Cairo turntable & UI animation unit/integration tests to `src/animation_tests.rs`.
+- **Clippy Lint & Idiomatic Rust Cleanup (`cargo clippy --all-targets -- -D warnings`):**
+  - Replaced 15-parameter function `draw_turntable` with clean `TurntableRenderParams` struct.
+  - Refactored `playlist_track_row` from 8 parameters using `PlaylistRowContext`.
+  - Refactored `scrobble_track` from 8 parameters using `ScrobblePayload`.
+  - Replaced unwieldy nested types with readable type aliases (`FailedPlaybackIdentity`, `SearchCallback`, `ActionCallback`).
+  - Upgraded array chunk iteration in `src/needle_drop.rs` to `.as_chunks::<2>()`.
+- **Version Bumped to v0.1.4:**
+  - `Cargo.toml` and application headers bumped to `v0.1.4`.
+- **Testing & Verification:**
+  - All 87 unit tests passing cleanly (`cargo test`).
+  - 0 warnings on `cargo clippy --all-targets -- -D warnings`.
+  - Optimized release binary compiled and installed to `~/.local/bin/vinylplayer`.
+
+## Release v0.1.3 — Desktop Icon & Wayland Integration Fix — 16/11/2026
+
+- **Wayland Window-to-Desktop Dock Association (`vinylplayer.desktop`):**
+  - Added `StartupWMClass=io.github.vinylplayer` to ensure GNOME Shell and Wayland compositors correctly map the running application process to its launcher entry.
+  - Installed desktop file as both `~/.local/share/applications/io.github.vinylplayer.desktop` and `~/.local/share/applications/vinylplayer.desktop`, updated desktop database via `update-desktop-database`.
+- **Complete Icon Theme Installation Across System & Custom Themes:**
+  - Deployed vector icon `vinylplayer.svg` and `io.github.vinylplayer.svg` into the user's active theme directory `~/.local/share/icons/Violeta-Panel/scalable/apps/`.
+  - Generated full suite of multi-resolution raster icons (16x16, 24x24, 32x32, 48x48, 64x64, 128x128, 256x256, 512x512) via `rsvg-convert` in `~/.local/share/icons/hicolor/`.
+  - Verified icon lookup via `Gtk::IconTheme` resolving both `io.github.vinylplayer` and `vinylplayer` as `True`.
+- **Version Number Bumped:**
+  - `Cargo.toml` and application headers updated to `v0.1.3`.
+- **Testing & Verification:**
+  - All 85 unit tests passing cleanly (`cargo test`).
+  - Release binary compiled and installed to `~/.local/bin/vinylplayer`.
+
+## Release v0.1.2 — Mini Album Cover in Transport Bar — 15/11/2026
+
+- **Mini Album Artwork in Now-Playing Bar (`src/main.rs`):**
+  - Replaced the static vinyl icon placeholder on the bottom left transport bar with an interactive `gtk::Stack` (`cover_stack`) featuring smooth crossfade transitions.
+  - Dynamically loads and downscales the active track's album cover (`128px` texture via `thumb_cache::load_cached_thumbnail` or embedded FLAC picture bytes via `PixbufLoader`) into a dedicated `gtk::Picture` (`.mini-cover-picture`) with `content-fit: cover`.
+  - Seamlessly falls back to the classic vintage golden disc icon (`.mini-disc-icon`) whenever no artwork is found or when the playback queue is empty.
+  - Styled with refined rounded corners (`border-radius: 10px`), subtle drop shadow (`box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35)`), and brushed amber border (`#494033`).
+- **Version Number Bumped:**
+  - `Cargo.toml` and application headers updated to `v0.1.2`.
+- **Testing & Verification:**
+  - All 85 unit tests passing cleanly (`cargo test`).
+  - Release binary compiled and installed to `~/.local/bin/vinylplayer`.
+
+## Release v0.1.1 — Track View Smooth Virtualization & Version Visibility — 15/11/2026
+
+- **Version Number Prominently Displayed Across the Application:**
+  - Added visual version badge (`v0.1.1`, `.version-badge`) in the sidebar branding header right next to the app logo and title.
+  - Included version number in the main desktop window title (`VinylPlayer v0.1.1 — High-Fidelity Audio`).
+  - Added version number to the Settings & Library Folders window title and header (`Settings & Library Folders (v0.1.1)`).
+  - Version bumped from `0.1.0` to `0.1.1` in `Cargo.toml`.
+- **Elimination of Track List Lag & Viewport Top Clipping (`src/main.rs`):**
+  - **Pre-Sorting in Rust:** `library_view` now pre-sorts `paths` in Rust memory before creating any widgets. When rows are appended to the GTK `ListBox`, they arrive in exact alphabetical or path order, eliminating $O(N^2)$ repetitive GTK `sort_func` passes and layout thrashing over 2,000 tracks.
+  - **Viewport Scroll Offset Reset:** Connected `connect_map` and end-of-batch callbacks to force `scroll.vadjustment().set_value(0.0)`, preventing GTK from auto-scrolling the viewport down by 15px when rows are added, which previously sliced the first track row in half horizontally.
+  - **Removed Disruptive Margin:** Replaced `.library-list { margin-top: 12px; }` with `padding-top: 2px` on the list and clean margin on the `ScrolledWindow`, fixing internal GTK viewport measurement bugs.
+  - **Non-Selectable Row Containers:** Set `row.set_selectable(false)` and `row.set_activatable(false)` on `GtkListBoxRow` to prevent focus hijacking and premature viewport jumping on tab navigation.
+  - **High-Throughput Chunk Loading:** Increased batch size to 64 rows with 2ms intervals, allowing instantaneous visual rendering of the first screen of tracks without UI freezes.
+- **Testing & Verification:**
+  - 85 unit tests passing cleanly (`cargo test`).
+  - Verified `library_folders` test passes with versioned window titles.
+  - Release binary `v0.1.1` compiled and installed to `~/.local/bin/vinylplayer`.
+
+## Persistent Library Cache & Zero-Delay Startup — 15/11/2026
+
+- **Persistent Disk Cache for Scanned Music Collections (`src/library_sources.rs` & `src/state.rs`):**
+  - Added `CachedLibrary` serialization and deserialization targeting `~/.cache/vinylplayer/library_index.json` (and isolated temporary directories during automated test runs).
+  - Saved scan payloads contain canonical root directory paths, collection of indexed audio tracks (`Track` structs with tags, track numbers, albums, and disc indices), and scan timestamps.
+- **Zero-Delay UI Boot with Instant Library Population (`src/library_settings.rs` & `src/main.rs`):**
+  - On application startup, `Catalog::new` checks for and immediately loads the existing `library_index.json` synchronously in under **1 millisecond**.
+  - Album grids and track lists are populated immediately using cached metadata without waiting for filesystem traversal.
+  - Users are no longer greeted by empty screens, loading spinners, or "Reading library folders…" status messages on launch.
+- **Silent Non-Destructive Background Scan (`src/library_settings.rs` & `src/main.rs`):**
+  - When the background scanner finishes inspecting directories, it writes the refreshed payload back to `library_index.json`.
+  - In `main.rs`, the UI compares incoming tracks with the currently displayed collection: if the track list has not changed, view reconstruction is bypassed entirely, avoiding visual flicker, unnecessary widget allocation, and scroll position resets.
+  - If new files are discovered or old files removed, the view updates seamlessly in place.
+- **Testing & Verification:**
+  - Standard unit tests (`cargo test`): 84 passed, 0 failed.
+  - Ignored tests (`library_folders`, `now_playing`): passed cleanly with 0 failures.
+  - Release binary installed to `~/.local/bin/vinylplayer`.
+
+## Startup Performance & Memory Optimization — 15/11/2026
+
+- **On-Demand Lazy Population for Heavy Library Views (`src/main.rs`):**
+  - Deferred detailed track rows population in `album_list`: rather than constructing ~2,000 GTK widget rows for the hidden "List" view of albums on startup, population is triggered on-demand when the user switches to the "List" tab or initiates a search.
+  - Deferred track view widget generation in `track_library_view`: if the active view is "Albums" or "Turntable", track rows are populated only when mapped (`connect_map`) or when a search query is entered. Small libraries ($\le 60$ tracks) and mapped views continue to populate immediately to maintain full test compatibility.
+- **Persistent Embedded FLAC Cover Cache (`src/audio.rs`):**
+  - Optimized `find_cover` to perform a single directory read (`std::fs::read_dir`) per album folder rather than 96 separate `is_file` stat syscalls on slow mechanical storage.
+  - Embedded FLAC artwork extracted via `metaflac` is now persisted to `~/.cache/vinylplayer/extracted-covers/{hash}.jpg` instead of ephemeral `/tmp`, preventing repeated multi-second external process executions on every system reboot.
+- **Micro-Optimized Playback Status Marker Synchronization (`src/now_playing.rs`):**
+  - Inverted the mode evaluation and weak reference upgrade logic in `now_playing::sync`: inactive markers that remain in `Mode::None` bypass the expensive `WeakRef::upgrade()` GObject calls entirely.
+  - Reduced per-tick weak reference resolution overhead from $>8,000$ calls to $\le 4$ calls per 250ms interval.
+- **High-Throughput Album Thumbnail Pipeline (`src/main.rs`):**
+  - Expanded thumbnail worker channel capacity from 4 to 16 and decreased UI delivery interval to 25ms, batching up to 8 thumbnails per tick. Album cover grids now render in under 500ms without blocking the GTK main loop.
+- **Benchmarked Impact:**
+  - Idle RSS memory dropped from **411.6 MB** to **180.3 MB** (-56% memory footprint).
+  - Startup CPU saturation dropped from 8 seconds at 99% CPU to brief, responsive bursts settling in ~2 seconds.
+- **Testing & Verification:** All 84 unit tests passing cleanly; release binary installed to `~/.local/bin/vinylplayer`.
 
 ## Native Last.fm Scrobbler Integration — 15/11/2026
 

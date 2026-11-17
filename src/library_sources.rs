@@ -2,10 +2,73 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-#[derive(Default, Debug)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScanReport {
     pub tracks: Vec<PathBuf>,
     pub warnings: Vec<String>,
+}
+
+pub struct CachedLibrary;
+
+impl CachedLibrary {
+    pub fn load_from(cache_path: &std::path::Path, roots: &[PathBuf]) -> Option<Vec<PathBuf>> {
+        if roots.is_empty() {
+            return None;
+        }
+        let content = std::fs::read_to_string(cache_path).ok()?;
+        let value = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+        let version = value.get("version").and_then(|v| v.as_u64())?;
+        if version != 1 {
+            return None;
+        }
+        let cached_roots: Vec<PathBuf> = value
+            .get("roots")
+            .and_then(|v| v.as_array())?
+            .iter()
+            .filter_map(|v| v.as_str().map(PathBuf::from))
+            .collect();
+        if cached_roots != roots {
+            return None;
+        }
+        let tracks: Vec<PathBuf> = value
+            .get("tracks")
+            .and_then(|v| v.as_array())?
+            .iter()
+            .filter_map(|v| v.as_str().map(PathBuf::from))
+            .filter(|p| p.is_file())
+            .collect();
+        if tracks.is_empty() {
+            None
+        } else {
+            Some(tracks)
+        }
+    }
+
+    pub fn save_to(cache_path: &std::path::Path, roots: &[PathBuf], tracks: &[PathBuf]) {
+        if let Some(parent) = cache_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let roots_json: Vec<String> = roots
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        let tracks_json: Vec<String> = tracks
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        let json_value = serde_json::json!({
+            "version": 1,
+            "roots": roots_json,
+            "tracks": tracks_json,
+        });
+        let Ok(content) = serde_json::to_string(&json_value) else {
+            return;
+        };
+        let tmp = cache_path.with_extension(format!("tmp.{}", std::process::id()));
+        if std::fs::write(&tmp, content).is_ok() {
+            let _ = std::fs::rename(tmp, cache_path);
+        }
+    }
 }
 
 pub fn scan(roots: &[PathBuf]) -> ScanReport {
@@ -100,5 +163,27 @@ mod tests {
         assert_eq!(result.tracks, vec![song]);
         assert_eq!(result.warnings.len(), 1);
         assert!(scan(&[]).tracks.is_empty());
+    }
+
+    #[test]
+    fn cached_library_roundtrip_and_missing_file_handling() {
+        let config = crate::state::TestConfig::new();
+        let root = config.path().parent().unwrap().to_path_buf();
+        let cache_file = root.join("test_cache.json");
+        let roots = vec![root.clone()];
+        assert!(CachedLibrary::load_from(&cache_file, &roots).is_none());
+
+        let song = root.join("song1.flac");
+        std::fs::write(&song, b"audio").unwrap();
+        let tracks = vec![song.clone()];
+        CachedLibrary::save_to(&cache_file, &roots, &tracks);
+        assert!(cache_file.is_file());
+
+        let loaded = CachedLibrary::load_from(&cache_file, &roots).expect("Cache should load");
+        assert_eq!(loaded, tracks);
+
+        // Mismatched roots should invalidate cache
+        let other_roots = vec![PathBuf::from("/other/folder")];
+        assert!(CachedLibrary::load_from(&cache_file, &other_roots).is_none());
     }
 }

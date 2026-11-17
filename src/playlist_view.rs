@@ -9,6 +9,17 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+type ActionCallback = Rc<dyn Fn()>;
+
+struct PlaylistRowContext<'a> {
+    audio: &'a Arc<AudioEngine>,
+    queue: Rc<Vec<PathBuf>>,
+    pl_state: &'a Rc<RefCell<Playlist>>,
+    list_weak: &'a glib::WeakRef<gtk::ListBox>,
+    count_weak: &'a glib::WeakRef<gtk::Label>,
+    manager: &'a Rc<PlaylistManager>,
+}
+
 /// Cria a visualização principal de Playlists para inclusão no Stack principal da aplicação.
 pub fn playlist_library_view(
     audio: &Arc<AudioEngine>,
@@ -81,7 +92,7 @@ fn playlist_browse_view(
         let audio = audio_rc.clone();
         let nav_weak = nav_weak.clone();
         let area_weak = area_weak.clone();
-        let reload_cards_slot: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+        let reload_cards_slot: Rc<RefCell<Option<ActionCallback>>> = Rc::new(RefCell::new(None));
         let slot = reload_cards_slot.clone();
         let cb = Rc::new(move || {
             let Some(area) = area_weak.upgrade() else {
@@ -514,8 +525,16 @@ fn playlist_detail_view(
             }
 
             let all_tracks = Rc::new(pl.tracks.clone());
+            let ctx = PlaylistRowContext {
+                audio: &audio,
+                queue: all_tracks,
+                pl_state: &pl_state,
+                list_weak: &list_weak,
+                count_weak: &count_weak,
+                manager: &mgr,
+            };
             for (idx, path) in pl.tracks.iter().cloned().enumerate() {
-                let row = playlist_track_row(&audio, path, idx, all_tracks.clone(), &pl_state, &list_weak, &count_weak, &mgr);
+                let row = playlist_track_row(&ctx, path, idx);
                 list.append(&row);
             }
         }
@@ -613,15 +632,17 @@ fn playlist_detail_view(
 
 /// Cria a linha de uma faixa dentro da tela de detalhes da playlist.
 fn playlist_track_row(
-    audio: &Arc<AudioEngine>,
+    ctx: &PlaylistRowContext<'_>,
     path: PathBuf,
     idx: usize,
-    queue: Rc<Vec<PathBuf>>,
-    pl_state: &Rc<RefCell<Playlist>>,
-    list_weak: &glib::WeakRef<gtk::ListBox>,
-    count_weak: &glib::WeakRef<gtk::Label>,
-    manager: &Rc<PlaylistManager>,
 ) -> gtk::Widget {
+    let audio = ctx.audio;
+    let queue = &ctx.queue;
+    let pl_state = ctx.pl_state;
+    let list_weak = ctx.list_weak;
+    let count_weak = ctx.count_weak;
+    let manager = ctx.manager;
+
     let row = gtk::ListBoxRow::new();
     row.add_css_class("track-row-item");
 
@@ -764,8 +785,16 @@ fn refresh_playlist_list(
         return;
     }
     let all_tracks = Rc::new(pl.tracks.clone());
+    let ctx = PlaylistRowContext {
+        audio,
+        queue: all_tracks,
+        pl_state,
+        list_weak,
+        count_weak,
+        manager,
+    };
     for (idx, path) in pl.tracks.iter().cloned().enumerate() {
-        let row = playlist_track_row(audio, path, idx, all_tracks.clone(), pl_state, list_weak, count_weak, manager);
+        let row = playlist_track_row(&ctx, path, idx);
         list.append(&row);
     }
 }

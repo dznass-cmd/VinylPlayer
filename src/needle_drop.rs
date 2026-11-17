@@ -168,8 +168,9 @@ mod tests {
 
         // Verifica energia não-nula nos dados PCM
         let mut max_val = 0_i16;
-        for chunk in bytes[44..].chunks_exact(2) {
-            let val = i16::from_le_bytes(chunk.try_into().unwrap());
+        let (chunks, _) = bytes[44..].as_chunks::<2>();
+        for chunk in chunks {
+            let val = i16::from_le_bytes(*chunk);
             max_val = max_val.max(val.abs());
         }
         assert!(max_val > 10000, "o áudio do needle drop deve possuir amplitude audível");
