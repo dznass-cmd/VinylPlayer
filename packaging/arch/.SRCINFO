@@ -14,6 +14,7 @@ pkgbase = vinylplayer
 	depends = gst-plugin-pipewire
 	optdepends = ffmpeg: leitura de metadados e tags avançadas com ffprobe
 	optdepends = flac: extração de capas embutidas em FLAC com metaflac
+	options = !lto
 	source = vinylplayer-0.1.4.tar.gz::https://github.com/dznass-cmd/VinylPlayer/archive/refs/tags/v0.1.4.tar.gz
 	sha256sums = SKIP
 
