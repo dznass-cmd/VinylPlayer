@@ -1,6 +1,6 @@
 pkgname=vinylplayer
-pkgver=0.1.0
-pkgrel=11
+pkgver=0.1.4
+pkgrel=1
 pkgdesc='Analog-inspired, lightweight, and native music player for the Linux desktop'
 arch=('x86_64')
 url='https://github.com/dznass-cmd/VinylPlayer'
@@ -11,22 +11,23 @@ optdepends=(
   'flac: extração de capas embutidas em FLAC com metaflac'
 )
 makedepends=('cargo')
-source=("$pkgname-$pkgver.tar.gz")
-sha256sums=('42f3576d1d9d68e2dfd58ac6a3723617af153e8f2f85c370283a44a3bd23d911')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
 
 prepare() {
-  cd "$pkgname-$pkgver"
+  cd "VinylPlayer-$pkgver"
   cargo fetch --locked
 }
 
 build() {
-  cd "$pkgname-$pkgver"
+  cd "VinylPlayer-$pkgver"
   cargo build --release --locked
 }
 
 package() {
-  cd "$pkgname-$pkgver"
+  cd "VinylPlayer-$pkgver"
   install -Dm755 target/release/vinylplayer "$pkgdir/usr/bin/vinylplayer"
-  install -Dm644 vinylplayer.desktop "$pkgdir/usr/share/applications/vinylplayer.desktop"
+  install -Dm644 vinylplayer.desktop "$pkgdir/usr/share/applications/io.github.vinylplayer.desktop"
+  install -Dm644 assets/vinylplayer.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.vinylplayer.svg"
   install -Dm644 assets/vinylplayer.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/vinylplayer.svg"
 }

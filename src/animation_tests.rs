@@ -157,7 +157,10 @@ use gtk::cairo;
         std::fs::remove_file(&fixtures[1]).unwrap();
         let _ = audio.play_files(&[fixtures[1].clone(), fixtures[0].clone()], 0);
         let dialog = wait_playback_error(&main_loop, None);
-        assert!(dialog.body().contains("não está disponível"));
+        assert!(
+            dialog.body().contains("not available")
+                || dialog.body().contains("não está disponível")
+        );
         assert_eq!(audio.state(), PlaybackState::Stopped);
         save_preview(dialog.upcast_ref(), "/tmp/vinylplayer-error-missing.png");
         silent_test_tracks(&config);
@@ -170,7 +173,9 @@ use gtk::cairo;
         let queue = vec![corrupt.clone(), fixtures[0].clone()];
         let _ = audio.play_files(&queue, 0);
         let first = wait_playback_error(&main_loop, Some(&dialog));
-        assert!(first.body().contains("danificado"));
+        assert!(
+            first.body().contains("corrupted") || first.body().contains("danificado")
+        );
         save_preview(first.upcast_ref(), "/tmp/vinylplayer-error-corrupt.png");
         first.response("retry");
         let second = wait_playback_error(&main_loop, Some(&first));
@@ -848,7 +853,10 @@ use gtk::cairo;
         assert!(indices().is_empty());
         let summary = descendants(window.upcast_ref(), |w| w.has_css_class("queue-summary"))
             .remove(0).downcast::<gtk::Label>().unwrap();
-        assert_eq!(summary.text(), "0 de 4 faixas");
+        assert!(matches!(
+            summary.text().as_str(),
+            "0 of 4 tracks" | "0 de 4 faixas"
+        ));
         assert!(descendants(window.upcast_ref(), |w| w.has_css_class("queue-empty"))[0].is_mapped());
         save_preview(&window, "/tmp/vinylplayer-queue-search-empty.png");
         queue_button(window.upcast_ref(), "queue-search-clear").emit_clicked();

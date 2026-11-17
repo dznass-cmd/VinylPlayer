@@ -2,11 +2,20 @@
 //! Suporta autenticação web, updateNowPlaying e scrobble com assinatura MD5.
 
 use md5::{Digest, Md5};
+use std::time::Duration;
 
 pub const DEFAULT_API_KEY: &str = "4b4f73bda181868353f9b438604adf52";
 pub const DEFAULT_API_SECRET: &str = "716cc0a784bb62835de5bd674e65eb57";
 pub const API_URL: &str = "https://ws.audioscrobbler.com/2.0/";
 pub const AUTH_URL: &str = "https://www.last.fm/api/auth/";
+const HTTP_TIMEOUT: Duration = Duration::from_secs(12);
+
+fn http_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(HTTP_TIMEOUT))
+        .build()
+        .into()
+}
 
 /// Calcula a assinatura MD5 (`api_sig`) de acordo com a especificação Audioscrobbler 2.0:
 /// 1. Ordena os parâmetros alfabeticamente pela chave (excluindo format, callback e api_sig).
@@ -69,8 +78,14 @@ pub mod urlencoding {
 
 /// Obtém um token de autorização temporário via `auth.getToken`.
 pub fn request_token(api_key: &str) -> Result<String, String> {
-    let url = format!("{API_URL}?method=auth.getToken&api_key={api_key}&format=json");
-    let mut res = ureq::get(&url)
+    let query = encode_form(&[
+        ("method", "auth.getToken"),
+        ("api_key", api_key),
+        ("format", "json"),
+    ]);
+    let url = format!("{API_URL}?{query}");
+    let mut res = http_agent()
+        .get(&url)
         .call()
         .map_err(|e| format!("Falha de conexão com Last.fm: {e}"))?;
     let body_str = res
@@ -90,7 +105,8 @@ pub fn request_token(api_key: &str) -> Result<String, String> {
 
 /// Constrói a URL para o usuário abrir no navegador e autorizar o app.
 pub fn authorization_url(api_key: &str, token: &str) -> String {
-    format!("{AUTH_URL}?api_key={api_key}&token={token}")
+    let query = encode_form(&[("api_key", api_key), ("token", token)]);
+    format!("{AUTH_URL}?{query}")
 }
 
 /// Obtém a chave de sessão permanente (`sk`) e nome de usuário a partir do token autorizado.
@@ -101,11 +117,17 @@ pub fn fetch_session(api_key: &str, api_secret: &str, token: &str) -> Result<(St
         ("token", token),
     ];
     let api_sig = sign_params(&params, api_secret);
-    let url = format!(
-        "{API_URL}?method=auth.getSession&api_key={api_key}&token={token}&api_sig={api_sig}&format=json"
-    );
+    let query = encode_form(&[
+        ("method", "auth.getSession"),
+        ("api_key", api_key),
+        ("token", token),
+        ("api_sig", &api_sig),
+        ("format", "json"),
+    ]);
+    let url = format!("{API_URL}?{query}");
 
-    let mut res = ureq::get(&url)
+    let mut res = http_agent()
+        .get(&url)
         .call()
         .map_err(|e| format!("Falha ao obter sessão do Last.fm: {e}"))?;
     let body_str = res
@@ -158,7 +180,8 @@ pub fn update_now_playing(
     post_params.push(("format", "json"));
 
     let body = encode_form(&post_params);
-    let mut res = ureq::post(API_URL)
+    let mut res = http_agent()
+        .post(API_URL)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .send(body.as_bytes())
         .map_err(|e| format!("Erro ao enviar Now Playing: {e}"))?;
@@ -218,7 +241,8 @@ pub fn scrobble_track(
     post_params.push(("format", "json"));
 
     let body = encode_form(&post_params);
-    let mut res = ureq::post(API_URL)
+    let mut res = http_agent()
+        .post(API_URL)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .send(body.as_bytes())
         .map_err(|e| format!("Erro ao enviar Scrobble: {e}"))?;
@@ -265,5 +289,14 @@ mod tests {
         ];
         let encoded = encode_form(&params);
         assert_eq!(encoded, "artist=Pink+Floyd&track=Time+%26+Space");
+    }
+
+    #[test]
+    fn test_authorization_url_encodes_params() {
+        let url = authorization_url("key with space", "tok&123");
+        assert_eq!(
+            url,
+            "https://www.last.fm/api/auth/?api_key=key+with+space&token=tok%26123"
+        );
     }
 }

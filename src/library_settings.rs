@@ -322,6 +322,28 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     });
     analog_box.append(&chk_light);
 
+    {
+        let state_sync = catalog.state.clone();
+        let chk_needle_sync = chk_needle.downgrade();
+        let chk_light_sync = chk_light.downgrade();
+        window.connect_is_active_notify(move |win| {
+            if !win.is_active() {
+                return;
+            }
+            let snap = state_sync.snapshot();
+            if let Some(chk) = chk_needle_sync.upgrade() {
+                if chk.is_active() != snap.needle_drop {
+                    chk.set_active(snap.needle_drop);
+                }
+            }
+            if let Some(chk) = chk_light_sync.upgrade() {
+                if chk.is_active() != snap.target_light {
+                    chk.set_active(snap.target_light);
+                }
+            }
+        });
+    }
+
     body.append(&analog_box);
 
     // Seção Last.fm Scrobbler nativo

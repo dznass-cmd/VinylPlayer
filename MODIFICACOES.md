@@ -1,6 +1,30 @@
 # Alterações do VinylPlayer
 
-Registro atualizado em 16/11/2026.
+Registro atualizado em 17/11/2026.
+
+## Bug Fixes, Concurrency Hardening & Packaging Sync — 17/11/2026
+
+- **Live Analog Experience Settings Sync (`src/main.rs`, `src/library_settings.rs`, `src/state.rs`):**
+  - Added lock-free atomic revision counter (`StateManager::revision`) so the turntable VSync loop immediately picks up changes to *Needle Drop* and *Stylus Target Light* toggled in the Settings window without requiring an application restart.
+  - Synchronized Settings checkboxes when refocusing the Settings window after clicking the physical Stylus Target Light tower on the turntable.
+- **Smart Keyboard Shortcut Guard (`src/main.rs`):**
+  - Updated the window-level `EventControllerKey` to ignore modified chords (`Ctrl`/`Alt`/`Super`) and yield propagation whenever focus is inside an editable input (`GtkText`, `GtkEntry`, `GtkSearchEntry`, `GtkPasswordEntry`, `GtkEditable`) or interactive slider/dropdown (`GtkScale`, `GtkDropDown`), preventing `Left`/`Right`/`Up`/`Down`/`Space` from hijacking track navigation or volume while typing or editing search queries.
+- **Portable Default Library Root Discovery (`src/state.rs`):**
+  - Replaced the hardcoded `/mnt/armazenamento/music` fallback in `AppState::library_roots` with `AppState::default_library_roots`, preserving automatic legacy migration when `/mnt/armazenamento/music` exists while cleanly falling back to `XDG_MUSIC_DIR` (`glib::user_special_dir`), `~/Music`, `~/Música`, or an empty list on fresh Linux installations.
+- **Full Multi-File, Folder & Playlist Drag-and-Drop (`src/main.rs`):**
+  - Upgraded the window `DropTarget` to accept both `gdk::FileList` and URI lists and process all dropped items asynchronously via `gio::spawn_blocking`, supporting multiple audio files, `.m3u`/`.m3u8` playlists, and recursive folder scanning without blocking the GTK main loop.
+- **Non-Blocking Cover Extraction, Negative Caching & Alpha-Preserving LRU Thumbnails (`src/audio.rs`, `src/main.rs`, `src/thumb_cache.rs`):**
+  - Moved uncached `metaflac` cover extraction off the GTK main thread in `AudioEngine::set_track` and silenced external `metaflac` `stdout`/`stderr` streams.
+  - Added negative cache markers (`{hash}.none`) in `~/.cache/vinylplayer/extracted-covers/` so FLAC tracks without embedded `PICTURE` blocks never re-spawn `metaflac`.
+  - Offloaded turntable and transport bar cover thumbnail decoding to `gio::spawn_blocking`.
+  - Preserved PNG alpha transparency in `thumb_cache::load_cached_thumbnail` and added background LRU cache pruning (`prune_cache_dir`).
+- **Last.fm Scrobbler Reliability & Accuracy (`src/scrobbler.rs`, `src/main.rs`):**
+  - Configured a 12-second global HTTP timeout on `ureq::Agent` and URL-encoded all query parameters in `request_token`, `authorization_url`, and `fetch_session`.
+  - Tracked `AudioEngine::track_sequence()` alongside URI in `ActiveScrobble` so pausing/resuming preserves listening progress while repeating a track under `RepeatMode::Track` properly dispatches subsequent *Now Playing* and *Scrobble* events.
+  - Measured actual accumulated listening time (`listened_ms`) rather than timeline seek position so scrubbing past 50% no longer triggers premature scrobbles.
+- **Packaging, Desktop Icon & Ignored UI Test Alignment (`packaging/arch/PKGBUILD`, `README.md`, `src/animation_tests.rs`):**
+  - Updated `packaging/arch/PKGBUILD` to `v0.1.4` and installed `io.github.vinylplayer.svg` alongside `vinylplayer.svg` (matching `Icon=io.github.vinylplayer` in `vinylplayer.desktop`) in both `PKGBUILD` and `README.md`.
+  - Updated localized string assertions in `src/animation_tests.rs` so all 13 `#[ignore]` GTK/FFmpeg integration tests pass cleanly alongside all 89 unit tests.
 
 ## Release v0.1.4 — Color Themes, Monolith Modularization & Clippy Cleanup — 16/11/2026
 

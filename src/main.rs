@@ -310,38 +310,91 @@ fn build_ui_with_catalog(
     });
     content.append(&queue_split);
 
-    // Suporte a arrastar e soltar arquivos na janela
-    let drop = gtk::DropTarget::new(glib::types::Type::STRING, gdk::DragAction::COPY);
+    // Suporte a arrastar e soltar arquivos, pastas e playlists na janela
+    let drop = gtk::DropTarget::new(glib::types::Type::INVALID, gdk::DragAction::COPY);
+    drop.set_types(&[gdk::FileList::static_type(), glib::types::Type::STRING]);
     let drop_audio = audio.clone();
+    let drop_stack = stack.downgrade();
+    let drop_title = title_label.downgrade();
+    let drop_nav_btns: Vec<(gtk::Button, &'static str)> =
+        nav_buttons.iter().map(|(b, p, _)| (b.clone(), *p)).collect();
     drop.connect_drop(move |_, value, _, _| {
-        let Ok(text) = value.get::<String>() else {
-            return false;
-        };
-        let uri = text.lines().next().unwrap_or_default().trim();
-        if !uri.starts_with("file://") {
-            return false;
-        }
-        let path = glib::filename_from_uri(uri).ok().map(|(path, _)| path);
-        if let Some(path) = path {
-            let ext = path
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if ext == "m3u" || ext == "m3u8" {
-                if let Ok(pl) = playlist::Playlist::load_from_file(&path) {
-                    if !pl.tracks.is_empty() {
-                        let _ = drop_audio.play_album(&pl.tracks, 0);
-                        return true;
+        let mut paths = Vec::new();
+        if let Ok(file_list) = value.get::<gdk::FileList>() {
+            for file in file_list.files() {
+                if let Some(path) = file.path() {
+                    paths.push(path);
+                }
+            }
+        } else if let Ok(text) = value.get::<String>() {
+            for raw in text.lines() {
+                let uri = raw.trim();
+                if uri.starts_with("file://") {
+                    if let Ok((path, _)) = glib::filename_from_uri(uri) {
+                        paths.push(path);
                     }
                 }
             }
-            if drop_audio.load(path).is_ok() {
-                let _ = drop_audio.play();
-                return true;
-            }
+        } else {
+            return false;
         }
-        false
+        if paths.is_empty() {
+            return false;
+        }
+        let audio_bg = drop_audio.clone();
+        let stack_weak = drop_stack.clone();
+        let title_weak = drop_title.clone();
+        let nav_btns = drop_nav_btns.clone();
+        glib::MainContext::default().spawn_local(async move {
+            let playable = gtk::gio::spawn_blocking(move || {
+                let mut collected = Vec::new();
+                for path in paths {
+                    if path.is_dir() {
+                        let scanned = library_sources::scan(std::slice::from_ref(&path));
+                        collected.extend(scanned.tracks);
+                        continue;
+                    }
+                    if !path.is_file() {
+                        continue;
+                    }
+                    let ext = path
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_ascii_lowercase();
+                    if ext == "m3u" || ext == "m3u8" {
+                        if let Ok(pl) = playlist::Playlist::load_from_file(&path) {
+                            collected.extend(pl.tracks.into_iter().filter(|p| p.is_file()));
+                        }
+                    } else if matches!(
+                        ext.as_str(),
+                        "flac" | "mp3" | "ogg" | "oga" | "wav" | "m4a" | "aac" | "opus" | "alac" | "aif" | "aiff" | "wma"
+                    ) {
+                        collected.push(path);
+                    }
+                }
+                collected
+            })
+            .await
+            .unwrap_or_default();
+
+            if !playable.is_empty() && audio_bg.play_files(&playable, 0).is_ok() {
+                if let Some(st) = stack_weak.upgrade() {
+                    st.set_visible_child_name("overview");
+                }
+                if let Some(tl) = title_weak.upgrade() {
+                    tl.set_text("Turntable");
+                }
+                for (b, page) in &nav_btns {
+                    if *page == "overview" {
+                        b.add_css_class("active-nav");
+                    } else {
+                        b.remove_css_class("active-nav");
+                    }
+                }
+            }
+        });
+        true
     });
     root.add_controller(drop);
 
@@ -517,48 +570,78 @@ fn build_ui_with_catalog(
         glib::Propagation::Proceed
     });
 
-    // Atalhos ergonômicos de teclado
+    // Atalhos ergonômicos de teclado (respeitando campos de texto e controles focados)
     let key_controller = gtk::EventControllerKey::new();
     let key_audio = audio.clone();
     let key_playing = playing.clone();
     let key_state = state_mgr.clone();
     let key_hud = volume_hud.clone();
-    key_controller.connect_key_pressed(move |_, keyval, _, _| match keyval {
-        gdk::Key::space => {
-            let v = !key_playing.get();
-            let _ = if v {
-                key_audio.play()
-            } else {
-                key_audio.pause()
-            };
-            key_playing.set(v);
-            glib::Propagation::Stop
+    let key_win = window.downgrade();
+    key_controller.connect_key_pressed(move |_, keyval, _, modifier| {
+        if modifier.intersects(
+            gdk::ModifierType::CONTROL_MASK
+                | gdk::ModifierType::ALT_MASK
+                | gdk::ModifierType::SUPER_MASK,
+        ) {
+            return glib::Propagation::Proceed;
         }
-        gdk::Key::Right => {
-            let _ = key_audio.next();
-            glib::Propagation::Stop
+        if let Some(win) = key_win.upgrade() {
+            if let Some(focused) = GtkWindowExt::focus(&win) {
+                if focused.is::<gtk::Text>()
+                    || focused.is::<gtk::Entry>()
+                    || focused.is::<gtk::SearchEntry>()
+                    || focused.is::<gtk::PasswordEntry>()
+                    || focused.ancestor(gtk::Editable::static_type()).is_some()
+                {
+                    return glib::Propagation::Proceed;
+                }
+                if (focused.is::<gtk::Scale>() || focused.is::<gtk::DropDown>())
+                    && matches!(
+                        keyval,
+                        gdk::Key::Left | gdk::Key::Right | gdk::Key::Up | gdk::Key::Down
+                    )
+                {
+                    return glib::Propagation::Proceed;
+                }
+            }
         }
-        gdk::Key::Left => {
-            let _ = key_audio.prev();
-            glib::Propagation::Stop
+        match keyval {
+            gdk::Key::space => {
+                let v = !key_playing.get();
+                let _ = if v {
+                    key_audio.play()
+                } else {
+                    key_audio.pause()
+                };
+                key_playing.set(v);
+                glib::Propagation::Stop
+            }
+            gdk::Key::Right => {
+                let _ = key_audio.next();
+                glib::Propagation::Stop
+            }
+            gdk::Key::Left => {
+                let _ = key_audio.prev();
+                glib::Propagation::Stop
+            }
+            gdk::Key::Up => {
+                let cur = key_audio.volume();
+                let new_vol = (cur + 0.05).clamp(0.0, 1.0);
+                key_audio.set_volume(new_vol);
+                key_state.update_volume(new_vol);
+                key_hud.borrow_mut().trigger(new_vol);
+                glib::Propagation::Stop
+            }
+            gdk::Key::Down => {
+                let cur = key_audio.volume();
+                let new_vol = (cur - 0.05).clamp(0.0, 1.0);
+                key_audio.set_volume(new_vol);
+                key_state.update_volume(new_vol);
+                key_hud.borrow_mut().trigger(new_vol);
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
         }
-        gdk::Key::Up => {
-            let cur = key_audio.volume();
-            let new_vol = (cur + 0.05).clamp(0.0, 1.0);
-            key_audio.set_volume(new_vol);
-            key_state.update_volume(new_vol);
-            key_hud.borrow_mut().trigger(new_vol);
-            glib::Propagation::Stop
-        }
-        gdk::Key::Down => {
-            let cur = key_audio.volume();
-            let new_vol = (cur - 0.05).clamp(0.0, 1.0);
-            key_audio.set_volume(new_vol);
-            key_state.update_volume(new_vol);
-            key_hud.borrow_mut().trigger(new_vol);
-            glib::Propagation::Stop
-        }
-        _ => glib::Propagation::Proceed,
     });
     window.add_controller(key_controller);
 
@@ -2020,7 +2103,7 @@ fn main_stage(
         // 2. Clique na Torre da Luz Alvo (Stylus Target Light)
         let d_tl = ((x - layout.target_light_x).powi(2) + (y - layout.target_light_y).powi(2)).sqrt();
         if d_tl <= layout.target_light_r + 6.0 {
-            let next_tl = !click_tl.get();
+            let next_tl = !click_state_mgr.snapshot().target_light;
             click_tl.set(next_tl);
             click_state_mgr.update_target_light(next_tl);
             click_state_mgr.flush_if_dirty();
@@ -2148,6 +2231,9 @@ fn main_stage(
     let tick_hud = volume_hud.clone();
     let tick_vu = vu_needles.clone();
     let tick_needle_drop = needle_drop.clone();
+    let tick_tl = target_light.clone();
+    let tick_state_mgr = state_mgr.clone();
+    let last_state_rev = Cell::new(state_mgr.revision());
     let tick_pitch = pitch.clone();
     let last_pitch = Rc::new(Cell::new(initial_pitch));
     let tick_last_notif = Rc::new(RefCell::new(String::new()));
@@ -2172,6 +2258,16 @@ fn main_stage(
             ((frame_time - prev_time) as f64 / 1_000_000.0).max(0.0)
         };
         let smoothing_dt = dt.min(0.05);
+
+        let mut settings_changed_draw = false;
+        let cur_state_rev = tick_state_mgr.revision();
+        if cur_state_rev != last_state_rev.replace(cur_state_rev) {
+            let snap = tick_state_mgr.snapshot();
+            tick_needle_drop.set(snap.needle_drop);
+            if tick_tl.replace(snap.target_light) != snap.target_light {
+                settings_changed_draw = true;
+            }
+        }
 
         let state = tick_audio.state();
         let is_playing = state == PlaybackState::Playing;
@@ -2286,24 +2382,71 @@ fn main_stage(
 
             let mut state = tick_cache.borrow_mut();
             if current_key != state.cover.key {
-                let pb = if let Some(ref p) = m.cover_path {
-                    thumb_cache::load_cached_thumbnail(p, 512)
-                } else if let Some(ref b) = m.cover_bytes {
-                    let loader = gdk_pixbuf::PixbufLoader::new();
-                    if loader.write(b).is_ok() && loader.close().is_ok() {
-                        loader.pixbuf()
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
                 state.cover = CachedCover {
-                    key: current_key,
-                    original: pb,
+                    key: current_key.clone(),
+                    original: None,
                     surface: None,
                 };
                 state.disc_surface = None;
+                drop(state);
+
+                let cover_path_bg = m.cover_path.clone();
+                let cover_bytes_bg = m.cover_bytes.clone();
+                if cover_path_bg.is_some() || cover_bytes_bg.is_some() {
+                    let cache_async = tick_cache.clone();
+                    let deck_weak = deck_widget.downgrade();
+                    let expected_key = current_key;
+                    glib::MainContext::default().spawn_local(async move {
+                        let decoded = gtk::gio::spawn_blocking(move || {
+                            let pb = if let Some(ref p) = cover_path_bg {
+                                thumb_cache::load_cached_thumbnail(p, 512)
+                            } else if let Some(ref b) = cover_bytes_bg {
+                                let loader = gdk_pixbuf::PixbufLoader::new();
+                                if loader.write(b).is_ok() && loader.close().is_ok() {
+                                    loader.pixbuf()
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }?;
+                            Some((
+                                pb.width(),
+                                pb.height(),
+                                pb.rowstride(),
+                                pb.has_alpha(),
+                                pb.read_pixel_bytes(),
+                            ))
+                        })
+                        .await
+                        .ok()
+                        .flatten();
+
+                        if let Some((w, h, stride, alpha, bytes)) = decoded {
+                            let mut st = cache_async.borrow_mut();
+                            if st.cover.key == expected_key {
+                                let pb = gdk_pixbuf::Pixbuf::from_bytes(
+                                    &bytes,
+                                    gdk_pixbuf::Colorspace::Rgb,
+                                    alpha,
+                                    8,
+                                    w,
+                                    h,
+                                    stride,
+                                );
+                                st.cover.original = Some(pb);
+                                st.cover.surface = None;
+                                st.disc_surface = None;
+                                drop(st);
+                                if let Some(d) = deck_weak.upgrade() {
+                                    d.queue_draw();
+                                }
+                            }
+                        }
+                    });
+                }
+            } else {
+                drop(state);
             }
             if is_playing && !m.uri.is_empty() {
                 let mut last_notif = tick_last_notif.borrow_mut();
@@ -2316,7 +2459,7 @@ fn main_stage(
         }
 
         // 2. Física e Dinâmica da Rotação e do Braço
-        let mut needs_draw = playback_changed;
+        let mut needs_draw = playback_changed || settings_changed_draw;
         if tick_rpm.get() != last_rpm.get() {
             last_rpm.set(tick_rpm.get());
             needs_draw = true;
@@ -2704,11 +2847,14 @@ fn player_bar(
     #[derive(Default)]
     struct ActiveScrobble {
         uri: String,
+        track_seq: u64,
         artist: String,
         title: String,
         album: String,
         duration_sec: u64,
         start_ts: u64,
+        listened_ms: u64,
+        last_play_instant: Option<std::time::Instant>,
         now_playing_sent: bool,
         scrobbled: bool,
     }
@@ -2784,27 +2930,64 @@ fn player_bar(
 
             let mut lck = tick_last_cover_key.borrow_mut();
             if *lck != cover_key {
-                *lck = cover_key;
-                let pb = if let Some(ref p) = m.cover_path {
-                    thumb_cache::load_cached_thumbnail(p, 128)
-                } else if let Some(ref b) = m.cover_bytes {
-                    let loader = gdk_pixbuf::PixbufLoader::new();
-                    if loader.write(b).is_ok() && loader.close().is_ok() {
-                        loader.pixbuf()
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
+                *lck = cover_key.clone();
+                drop(lck);
 
-                if let Some(pixbuf) = pb {
-                    let texture = gdk::Texture::for_pixbuf(&pixbuf);
-                    tick_mini_picture.set_paintable(Some(&texture));
-                    tick_cover_stack.set_visible_child_name("cover");
-                } else {
+                let cover_path_bg = m.cover_path.clone();
+                let cover_bytes_bg = m.cover_bytes.clone();
+                if cover_path_bg.is_none() && cover_bytes_bg.is_none() {
                     tick_mini_picture.set_paintable(None::<&gdk::Texture>);
                     tick_cover_stack.set_visible_child_name("placeholder");
+                } else {
+                    let pic_weak = tick_mini_picture.downgrade();
+                    let stack_weak = tick_cover_stack.downgrade();
+                    let key_ref = tick_last_cover_key.clone();
+                    let expected_key = cover_key;
+                    glib::MainContext::default().spawn_local(async move {
+                        let decoded = gtk::gio::spawn_blocking(move || {
+                            let pb = if let Some(ref p) = cover_path_bg {
+                                thumb_cache::load_cached_thumbnail(p, 128)
+                            } else if let Some(ref b) = cover_bytes_bg {
+                                let loader = gdk_pixbuf::PixbufLoader::new();
+                                if loader.write(b).is_ok() && loader.close().is_ok() {
+                                    loader.pixbuf()
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }?;
+                            Some((
+                                pb.width(),
+                                pb.height(),
+                                pb.rowstride() as usize,
+                                pb.has_alpha(),
+                                pb.read_pixel_bytes(),
+                            ))
+                        })
+                        .await
+                        .ok()
+                        .flatten();
+
+                        if *key_ref.borrow() != expected_key {
+                            return;
+                        }
+                        if let (Some(pic), Some(st)) = (pic_weak.upgrade(), stack_weak.upgrade()) {
+                            if let Some((w, h, stride, alpha, bytes)) = decoded {
+                                let fmt = if alpha {
+                                    gdk::MemoryFormat::R8g8b8a8
+                                } else {
+                                    gdk::MemoryFormat::R8g8b8
+                                };
+                                let tex = gdk::MemoryTexture::new(w, h, fmt, &bytes, stride);
+                                pic.set_paintable(Some(&tex));
+                                st.set_visible_child_name("cover");
+                            } else {
+                                pic.set_paintable(None::<&gdk::Texture>);
+                                st.set_visible_child_name("placeholder");
+                            }
+                        }
+                    });
                 }
             }
 
@@ -2876,13 +3059,15 @@ fn player_bar(
         tick_elapsed.set_text(&format_time(p));
         tick_total.set_text(&format_time(d));
 
-        // Integração Last.fm: updateNowPlaying e Scrobble automático
+        // Integração Last.fm: updateNowPlaying e Scrobble automático com tempo real ouvido
         let lfm_snap = tick_state.snapshot();
         if lfm_snap.lastfm_enabled && lfm_snap.is_lastfm_authenticated() {
             let is_playing = state == PlaybackState::Playing;
+            let cur_seq = tick_audio.track_sequence();
             if is_playing && !uri.is_empty() {
                 let mut cs = current_scrobble.borrow_mut();
-                if cs.uri != uri {
+                let now_inst = std::time::Instant::now();
+                if cs.uri != uri || cs.track_seq != cur_seq {
                     let m = tick_audio.metadata();
                     let now_ts = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -2891,14 +3076,20 @@ fn player_bar(
                     let dur = (d.max(0) / 1_000_000) as u64;
                     *cs = ActiveScrobble {
                         uri: uri.clone(),
+                        track_seq: cur_seq,
                         artist: m.artist,
                         title: m.title,
                         album: m.album,
                         duration_sec: dur,
                         start_ts: now_ts,
+                        listened_ms: 0,
+                        last_play_instant: Some(now_inst),
                         now_playing_sent: false,
                         scrobbled: false,
                     };
+                } else if let Some(prev_inst) = cs.last_play_instant.replace(now_inst) {
+                    let delta_ms = (now_inst.duration_since(prev_inst).as_millis() as u64).min(1000);
+                    cs.listened_ms = cs.listened_ms.saturating_add(delta_ms);
                 }
 
                 if cs.artist.is_empty() || cs.title.is_empty() {
@@ -2946,14 +3137,14 @@ fn player_bar(
                         .ok();
                 }
 
-                // 2. Scrobble: faixa >= 30s e decorrido >= min(duration / 2, 240s)
-                let pos_sec = (p.max(0) / 1_000_000) as u64;
+                // 2. Scrobble: faixa >= 30s e tempo REAL escutado >= min(duration / 2, 240s)
+                let listened_sec = cs.listened_ms / 1000;
                 let dur_sec = cs.duration_sec;
                 let min_play = (dur_sec / 2).min(240);
 
                 if !cs.scrobbled
                     && dur_sec >= 30
-                    && pos_sec >= min_play
+                    && listened_sec >= min_play
                     && !cs.title.is_empty()
                     && !cs.artist.is_empty()
                 {
@@ -2988,10 +3179,15 @@ fn player_bar(
                         })
                         .ok();
                 }
-            } else if state == PlaybackState::Stopped {
+            } else {
                 let mut cs = current_scrobble.borrow_mut();
-                if !cs.uri.is_empty() {
-                    *cs = ActiveScrobble::default();
+                if state == PlaybackState::Stopped {
+                    if !cs.uri.is_empty() {
+                        *cs = ActiveScrobble::default();
+                    }
+                } else {
+                    // Em pausa: para de contar tempo escutado até retomar Playing
+                    cs.last_play_instant = None;
                 }
             }
         }

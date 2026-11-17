@@ -111,7 +111,8 @@ cargo build --release
 
 # Install locally
 install -Dm755 target/release/vinylplayer ~/.local/bin/vinylplayer
-install -Dm644 vinylplayer.desktop ~/.local/share/applications/vinylplayer.desktop
+install -Dm644 vinylplayer.desktop ~/.local/share/applications/io.github.vinylplayer.desktop
+install -Dm644 assets/vinylplayer.svg ~/.local/share/icons/hicolor/scalable/apps/io.github.vinylplayer.svg
 install -Dm644 assets/vinylplayer.svg ~/.local/share/icons/hicolor/scalable/apps/vinylplayer.svg
 ```
 

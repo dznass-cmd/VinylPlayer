@@ -167,6 +167,7 @@ pub struct AudioEngine {
     metadata: Arc<Mutex<TrackMetadata>>,
     metadata_ver: Arc<AtomicU64>,
     attempts: Arc<AtomicU64>,
+    track_seq: Arc<AtomicU64>,
     queue: Arc<Mutex<PlaybackQueue>>,
     shuffle: Arc<AtomicBool>,
     repeat_mode: Arc<AtomicU8>,
@@ -200,6 +201,7 @@ impl AudioEngine {
             metadata: Default::default(),
             metadata_ver: Arc::new(AtomicU64::new(1)),
             attempts: Arc::new(AtomicU64::new(0)),
+            track_seq: Arc::new(AtomicU64::new(0)),
             queue: Arc::new(Mutex::new(queue)),
             shuffle: Arc::new(AtomicBool::new(false)),
             repeat_mode: Arc::new(AtomicU8::new(RepeatMode::Off.to_u8())),
@@ -231,22 +233,46 @@ impl AudioEngine {
         bus.set_flushing(false);
         ready.map_err(|e| anyhow::anyhow!("preparar nova faixa: {e:?}"))?;
         self.playbin.set_property("uri", &uri);
+        let expected_uri = uri.to_string();
+        let initial_cover = if path.is_file() {
+            match find_cached_or_local_cover(path) {
+                Ok(cover) => cover,
+                Err(cache_out) => {
+                    let path_bg = path.to_path_buf();
+                    let meta_bg = self.metadata.clone();
+                    let ver_bg = self.metadata_ver.clone();
+                    let uri_bg = expected_uri.clone();
+                    let _ = std::thread::Builder::new()
+                        .name("vinyl-cover-extract".into())
+                        .spawn(move || {
+                            if let Some(extracted) = extract_flac_cover(&path_bg, &cache_out) {
+                                let mut m = meta_bg.lock().unwrap();
+                                if m.uri == uri_bg && m.cover_path.is_none() {
+                                    m.cover_path = Some(extracted);
+                                    drop(m);
+                                    ver_bg.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                        });
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let mut m = self.metadata.lock().unwrap();
         *m = TrackMetadata {
-            uri: uri.to_string(),
+            uri: expected_uri,
             title: path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("Faixa")
                 .into(),
-            cover_path: if path.is_file() {
-                find_cover(path)
-            } else {
-                None
-            },
+            cover_path: initial_cover,
             ..Default::default()
         };
         self.metadata_ver.fetch_add(1, Ordering::Relaxed);
+        self.track_seq.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -603,6 +629,9 @@ impl AudioEngine {
     pub fn playback_attempt(&self) -> u64 {
         self.attempts.load(Ordering::Relaxed)
     }
+    pub fn track_sequence(&self) -> u64 {
+        self.track_seq.load(Ordering::Relaxed)
+    }
 
     /// Identidade leve para os indicadores: não copia imagens ou demais tags.
     pub fn playback_identity(&self) -> (PlaybackState, String) {
@@ -742,8 +771,12 @@ fn make_audio_sink() -> Result<gst::Element> {
     Ok(bin.upcast())
 }
 
-pub(crate) fn find_cover(path: &Path) -> Option<PathBuf> {
-    let dir = path.parent()?;
+/// Busca rápida (sem invocar processos externos): procura imagem na pasta ou no cache de capas FLAC.
+/// Retorna `Err(out_path)` apenas quando o arquivo é um `.flac` ainda não verificado no cache.
+fn find_cached_or_local_cover(path: &Path) -> std::result::Result<Option<PathBuf>, PathBuf> {
+    let Some(dir) = path.parent() else {
+        return Ok(None);
+    };
 
     // 1. Um único read_dir no diretório para achar capas locais sem disparar dezenas de syscalls de stat
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -777,12 +810,11 @@ pub(crate) fn find_cover(path: &Path) -> Option<PathBuf> {
         }
 
         if let Some(cover) = priority_match.or(fallback_match) {
-            return Some(cover);
+            return Ok(Some(cover));
         }
     }
 
-    // 2. Se for arquivo FLAC e não houver imagem solta na pasta, extrai metadado de imagem embutida
-    // usando cache persistente em ~/.cache/vinylplayer/extracted-covers/ para nunca re-executar metaflac
+    // 2. Se for arquivo FLAC e não houver imagem solta na pasta, consulta cache positivo/negativo
     if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
         if ext.eq_ignore_ascii_case("flac") {
             use std::collections::hash_map::DefaultHasher;
@@ -805,10 +837,15 @@ pub(crate) fn find_cover(path: &Path) -> Option<PathBuf> {
             let mut hasher = DefaultHasher::new();
             path.hash(&mut hasher);
             mtime.hash(&mut hasher);
-            let out = cache_dir.join(format!("{:016x}.jpg", hasher.finish()));
+            let hash_val = hasher.finish();
+            let out = cache_dir.join(format!("{hash_val:016x}.jpg"));
+            let none_marker = cache_dir.join(format!("{hash_val:016x}.none"));
 
             if out.is_file() {
-                return Some(out);
+                return Ok(Some(out));
+            }
+            if none_marker.is_file() {
+                return Ok(None);
             }
 
             // Migra cópia temporária de /tmp caso já tenha sido extraída anteriormente
@@ -818,32 +855,45 @@ pub(crate) fn find_cover(path: &Path) -> Option<PathBuf> {
                 std::env::temp_dir().join(format!("vinyl_cover_{:x}.jpg", legacy_hasher.finish()));
             if legacy_out.is_file() {
                 if std::fs::copy(&legacy_out, &out).is_ok() {
-                    return Some(out);
+                    return Ok(Some(out));
                 }
-                return Some(legacy_out);
+                return Ok(Some(legacy_out));
             }
 
-            // Extração sob demanda via metaflac com arquivo temporário e rename atômico
-            let tmp_out = cache_dir.join(format!(
-                "{:016x}.tmp.{}",
-                hasher.finish(),
-                std::process::id()
-            ));
-            if let Ok(status) = std::process::Command::new("metaflac")
-                .arg(format!("--export-picture-to={}", tmp_out.display()))
-                .arg(path)
-                .status()
-            {
-                if status.success() && tmp_out.is_file() {
-                    let _ = std::fs::rename(&tmp_out, &out);
-                    return Some(out);
-                }
-            }
-            let _ = std::fs::remove_file(&tmp_out);
+            return Err(out);
         }
     }
 
+    Ok(None)
+}
+
+fn extract_flac_cover(path: &Path, out: &Path) -> Option<PathBuf> {
+    let tmp_out = out.with_extension(format!("tmp.{}", std::process::id()));
+    let status = std::process::Command::new("metaflac")
+        .arg(format!("--export-picture-to={}", tmp_out.display()))
+        .arg(path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    if let Ok(status) = status {
+        if status.success() && tmp_out.is_file() {
+            let _ = std::fs::rename(&tmp_out, out);
+            return Some(out.to_path_buf());
+        }
+        // Cache negativo: registra que este FLAC (neste mtime) não possui bloco PICTURE
+        let none_marker = out.with_extension("none");
+        let _ = std::fs::write(none_marker, b"");
+    }
+    let _ = std::fs::remove_file(&tmp_out);
     None
+}
+
+pub(crate) fn find_cover(path: &Path) -> Option<PathBuf> {
+    match find_cached_or_local_cover(path) {
+        Ok(cover) => cover,
+        Err(out) => extract_flac_cover(path, &out),
+    }
 }
 
 #[cfg(test)]
@@ -862,6 +912,7 @@ mod tests {
             metadata: Default::default(),
             metadata_ver: Arc::new(AtomicU64::new(1)),
             attempts: Arc::new(AtomicU64::new(0)),
+            track_seq: Arc::new(AtomicU64::new(0)),
             queue: Default::default(),
             shuffle: Arc::new(AtomicBool::new(false)),
             repeat_mode: Arc::new(AtomicU8::new(RepeatMode::Off.to_u8())),

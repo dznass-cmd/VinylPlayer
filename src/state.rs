@@ -2,7 +2,7 @@ use crate::audio::RepeatMode;
 use crate::playback_queue::QueueSnapshot;
 use gtk::gio::prelude::FileExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// O vetor é compartilhado entre snapshots; mudar a seleção não copia a fila.
@@ -132,10 +132,31 @@ impl AppState {
     pub fn theme(&self) -> &str {
         self.theme.as_deref().unwrap_or("amber")
     }
+    pub fn default_library_roots() -> Vec<PathBuf> {
+        let legacy = PathBuf::from("/mnt/armazenamento/music");
+        if legacy.is_dir() {
+            return vec![legacy];
+        }
+        if let Some(music_dir) = glib::user_special_dir(glib::UserDirectory::Music) {
+            if music_dir.is_dir() {
+                return vec![music_dir];
+            }
+        }
+        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+            for candidate in ["Music", "Música"] {
+                let p = home.join(candidate);
+                if p.is_dir() {
+                    return vec![p];
+                }
+            }
+        }
+        Vec::new()
+    }
+
     pub fn library_roots(&self) -> Vec<PathBuf> {
         self.library_folders
             .clone()
-            .unwrap_or_else(|| vec![PathBuf::from("/mnt/armazenamento/music")])
+            .unwrap_or_else(Self::default_library_roots)
     }
 
     pub fn lastfm_api_key(&self) -> &str {
@@ -351,6 +372,7 @@ struct VersionedState {
 struct Store {
     path: PathBuf,
     data: Mutex<VersionedState>,
+    revision_atomic: AtomicU64,
     writer: Mutex<()>,
     saving: AtomicBool,
 }
@@ -376,10 +398,15 @@ impl StateManager {
                     revision: 0,
                     saved_revision: 0,
                 }),
+                revision_atomic: AtomicU64::new(0),
                 writer: Mutex::new(()),
                 saving: AtomicBool::new(false),
             }),
         }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.inner.revision_atomic.load(Ordering::Relaxed)
     }
 
     pub fn snapshot(&self) -> AppState {
@@ -402,6 +429,9 @@ impl StateManager {
         edit(&mut data.value);
         if data.value != previous {
             data.revision += 1;
+            self.inner
+                .revision_atomic
+                .store(data.revision, Ordering::Relaxed);
         }
     }
 
@@ -581,7 +611,7 @@ mod tests {
         let manager = StateManager::with_path(config.path());
         assert_eq!(
             manager.snapshot().library_roots(),
-            vec![PathBuf::from("/mnt/armazenamento/music")]
+            AppState::default_library_roots()
         );
         let roots = vec![
             config.path().with_file_name("Coleção \"A\"\n#"),
