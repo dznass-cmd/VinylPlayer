@@ -4,8 +4,8 @@
 use md5::{Digest, Md5};
 use std::time::Duration;
 
-pub const DEFAULT_API_KEY: &str = "4b4f73bda181868353f9b438604adf52";
-pub const DEFAULT_API_SECRET: &str = "716cc0a784bb62835de5bd674e65eb57";
+pub const DEFAULT_API_KEY: &str = "";
+pub const DEFAULT_API_SECRET: &str = "";
 pub const API_URL: &str = "https://ws.audioscrobbler.com/2.0/";
 pub const AUTH_URL: &str = "https://www.last.fm/api/auth/";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(12);
