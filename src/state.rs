@@ -100,6 +100,10 @@ pub struct AppState {
     pub lastfm_api_secret: Option<String>,
     /// Tema visual / cor de destaque da interface. Padrão: "amber".
     pub theme: Option<String>,
+    /// Notificações de mudança de faixa na área de trabalho. Padrão: true.
+    pub notifications: bool,
+    /// Idioma da interface ("en" ou "pt-BR"; None segue o idioma do sistema).
+    pub language: Option<String>,
 }
 
 impl Default for AppState {
@@ -124,6 +128,8 @@ impl Default for AppState {
             lastfm_api_key: None,
             lastfm_api_secret: None,
             theme: None,
+            notifications: true,
+            language: None,
         }
     }
 }
@@ -172,9 +178,11 @@ impl AppState {
     }
 
     pub fn is_lastfm_authenticated(&self) -> bool {
-        self.lastfm_session_key
-            .as_ref()
-            .is_some_and(|k| !k.is_empty())
+        !self.lastfm_api_key().trim().is_empty()
+            && !self.lastfm_api_secret().trim().is_empty()
+            && self.lastfm_session_key
+                .as_ref()
+                .is_some_and(|k| !k.trim().is_empty())
     }
 
     /// Serializa o estado para formato JSON formatado.
@@ -197,6 +205,8 @@ impl AppState {
             "lastfm_api_key": self.lastfm_api_key,
             "lastfm_api_secret": self.lastfm_api_secret,
             "theme": self.theme,
+            "notifications": self.notifications,
+            "language": self.language,
         });
         if let Some(queue) = &self.queue {
             value["queue"] = queue.to_json();
@@ -279,6 +289,13 @@ impl AppState {
             .map(String::from);
         state.theme = value
             .get("theme")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        if let Some(notif) = value.get("notifications").and_then(|v| v.as_bool()) {
+            state.notifications = notif;
+        }
+        state.language = value
+            .get("language")
             .and_then(|v| v.as_str())
             .map(String::from);
         state.last_track_path = value
@@ -488,6 +505,12 @@ impl StateManager {
     pub fn update_theme(&self, theme: String) {
         self.update(|state| state.theme = Some(theme));
     }
+    pub fn update_notifications(&self, enabled: bool) {
+        self.update(|state| state.notifications = enabled);
+    }
+    pub fn update_language(&self, language: Option<String>) {
+        self.update(|state| state.language = language);
+    }
     pub fn update_queue(&self, snapshot: QueueSnapshot) {
         let queue = SavedQueue {
             tracks: Arc::new(snapshot.tracks),
@@ -659,6 +682,9 @@ mod tests {
         assert_eq!(st.lastfm_username, None);
         assert_eq!(st.lastfm_api_key, None);
         assert_eq!(st.lastfm_api_secret, None);
+        assert_eq!(st.theme, None);
+        assert!(st.notifications);
+        assert_eq!(st.language, None);
     }
 
     #[test]
@@ -683,10 +709,14 @@ mod tests {
             lastfm_api_key: None,
             lastfm_api_secret: None,
             theme: Some("emerald".into()),
+            notifications: false,
+            language: Some("pt-BR".into()),
         };
         let json = st.to_json();
         let restored = AppState::from_json(&json);
         assert_eq!(restored.theme(), "emerald");
+        assert!(!restored.notifications);
+        assert_eq!(restored.language.as_deref(), Some("pt-BR"));
         assert!((restored.volume - 0.725).abs() < 0.001);
         assert_eq!(restored.active_view, "albums");
         assert_eq!(restored.track_sort_mode, 1);
@@ -1077,5 +1107,25 @@ mod tests {
         manager.update_theme("blue".to_string());
         manager.flush_now().unwrap();
         assert_eq!(AppState::load_from(&config.path()).theme(), "blue");
+    }
+
+    #[test]
+    fn notifications_and_language_roundtrip() {
+        let config = TestConfig::new();
+        let manager = StateManager::with_path(config.path());
+        assert!(manager.snapshot().notifications);
+        assert_eq!(manager.snapshot().language, None);
+        manager.update_notifications(false);
+        manager.update_language(Some("pt-BR".into()));
+        manager.flush_now().unwrap();
+        let loaded = AppState::load_from(&config.path());
+        assert!(!loaded.notifications);
+        assert_eq!(loaded.language.as_deref(), Some("pt-BR"));
+        manager.update_notifications(true);
+        manager.update_language(Some("en".into()));
+        manager.flush_now().unwrap();
+        let loaded2 = AppState::load_from(&config.path());
+        assert!(loaded2.notifications);
+        assert_eq!(loaded2.language.as_deref(), Some("en"));
     }
 }

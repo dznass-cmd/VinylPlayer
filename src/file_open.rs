@@ -30,15 +30,24 @@ fn validate(files: &[gtk::gio::File]) -> Request {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
+        let lang = crate::i18n::current();
         let reason = if !path.is_file() {
-            Some("file not found or not a regular file")
+            Some(crate::i18n::pick_for(
+                lang,
+                "file not found or not a regular file",
+                "arquivo não encontrado ou inválido",
+            ))
         } else if ![
             "flac", "mp3", "ogg", "oga", "wav", "m4a", "aac", "opus", "alac", "aif", "aiff", "wma",
             "m3u", "m3u8",
         ]
         .contains(&extension.as_str())
         {
-            Some("unrecognized audio format")
+            Some(crate::i18n::pick_for(
+                lang,
+                "unrecognized audio format",
+                "formato de áudio não reconhecido",
+            ))
         } else {
             None
         };
@@ -71,7 +80,15 @@ fn ensure_session(
         }
     }
     let audio = factory(app);
-    let window = app.active_window().expect("janela do player");
+    let window = app
+        .active_window()
+        .or_else(|| app.windows().first().cloned())
+        .unwrap_or_else(|| {
+            app.activate();
+            app.active_window()
+                .or_else(|| app.windows().first().cloned())
+                .expect("janela do player após ativação")
+        });
     *session.borrow_mut() = Some(Session {
         audio: audio.clone(),
         window: window.downgrade(),
@@ -89,13 +106,22 @@ fn show_errors(window: &gtk::Window, errors: &[String]) {
         .cloned()
         .collect::<Vec<_>>()
         .join("\n\n");
+    let lang = crate::i18n::current();
     if errors.len() > 5 {
-        body.push_str(&format!("\n\nAnd {} more file(s).", errors.len() - 5));
+        let extra = errors.len() - 5;
+        body.push_str(&match lang {
+            crate::i18n::Language::En => format!("\n\nAnd {extra} more file(s)."),
+            crate::i18n::Language::PtBr => format!("\n\nE mais {extra} arquivo(s)."),
+        });
     }
     let dialog = libadwaita::MessageDialog::builder()
         .transient_for(window)
         .destroy_with_parent(true)
-        .heading("Could not open some files")
+        .heading(crate::i18n::pick_for(
+            lang,
+            "Could not open some files",
+            "Não foi possível abrir alguns arquivos",
+        ))
         .body(&body)
         .build();
     dialog.add_response("ok", "OK");
@@ -129,9 +155,14 @@ pub fn connect_handlers(
                 if ext == "m3u" || ext == "m3u8" {
                     match crate::playlist::Playlist::load_from_file(p) {
                         Ok(pl) => playable_tracks.extend(pl.tracks),
-                        Err(e) => request
-                            .rejected
-                            .push(format!("{}: failed to read playlist ({e})", p.display())),
+                        Err(e) => request.rejected.push(match crate::i18n::current() {
+                            crate::i18n::Language::En => {
+                                format!("{}: failed to read playlist ({e})", p.display())
+                            }
+                            crate::i18n::Language::PtBr => {
+                                format!("{}: falha ao ler playlist ({e})", p.display())
+                            }
+                        }),
                     }
                 } else {
                     playable_tracks.push(p.clone());
@@ -148,9 +179,14 @@ pub fn connect_handlers(
                             );
                         }
                     }
-                    Err(error) => request
-                        .rejected
-                        .push(format!("Failed to start playback: {error}")),
+                    Err(error) => request.rejected.push(match crate::i18n::current() {
+                        crate::i18n::Language::En => {
+                            format!("Failed to start playback: {error}")
+                        }
+                        crate::i18n::Language::PtBr => {
+                            format!("Falha ao iniciar a reprodução: {error}")
+                        }
+                    }),
                 }
             }
         }

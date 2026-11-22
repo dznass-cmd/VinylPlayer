@@ -160,6 +160,42 @@ fn find_track(queue: &[PathBuf], query: &str) -> Option<PathBuf> {
         .cloned()
 }
 
+#[derive(Clone, Debug)]
+struct GaplessPending {
+    index: usize,
+    path: PathBuf,
+    uri: String,
+}
+
+fn next_auto_index_from(
+    queue: &PlaybackQueue,
+    shuffle: bool,
+    repeat: RepeatMode,
+) -> Option<usize> {
+    let len = queue.tracks.len();
+    if len == 0 {
+        return None;
+    }
+    if repeat == RepeatMode::Track {
+        return queue.current.filter(|i| *i < len);
+    }
+    if shuffle {
+        pick_shuffle_index(queue.current, len)
+    } else {
+        let next = queue
+            .current
+            .and_then(|i| i.checked_add(1))
+            .filter(|i| *i < len);
+        if next.is_some() {
+            next
+        } else if repeat == RepeatMode::All {
+            Some(0)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AudioEngine {
     playbin: gst::Element,
@@ -174,6 +210,7 @@ pub struct AudioEngine {
     level_l: Arc<AtomicU32>,
     level_r: Arc<AtomicU32>,
     rate: Arc<AtomicU32>,
+    pending_gapless: Arc<Mutex<Option<GaplessPending>>>,
 }
 
 impl AudioEngine {
@@ -208,12 +245,63 @@ impl AudioEngine {
             level_l: Arc::new(AtomicU32::new((-80.0f32).to_bits())),
             level_r: Arc::new(AtomicU32::new((-80.0f32).to_bits())),
             rate: Arc::new(AtomicU32::new((1.0f32).to_bits())),
+            pending_gapless: Default::default(),
         };
+        engine.connect_gapless();
         if let Some(index) = selected {
             let queue = engine.queue.lock().unwrap();
             engine.set_track(&queue.tracks[index])?;
         }
         Ok(engine)
+    }
+
+    fn connect_gapless(&self) {
+        let weak_playbin = self.playbin.downgrade();
+        let state = self.state.clone();
+        let queue = self.queue.clone();
+        let shuffle = self.shuffle.clone();
+        let repeat_mode = self.repeat_mode.clone();
+        let pending_gapless = self.pending_gapless.clone();
+        self.playbin.connect("about-to-finish", false, move |_| {
+            let pb = weak_playbin.upgrade()?;
+            if *state.lock().unwrap() == PlaybackState::Stopped {
+                return None;
+            }
+            let next_uri = {
+                // Use try_lock to prevent AB-BA deadlock while set_track holds queue
+                // and calls playbin.set_state(Ready) waiting on the streaming thread.
+                let mut guard = None;
+                for _ in 0..4 {
+                    if let Ok(q) = queue.try_lock() {
+                        guard = Some(q);
+                        break;
+                    }
+                    std::thread::yield_now();
+                }
+                let q = guard?;
+                let mut pending = pending_gapless.lock().unwrap();
+                if pending.is_some() {
+                    return None;
+                }
+                let idx = next_auto_index_from(
+                    &q,
+                    shuffle.load(Ordering::Relaxed),
+                    RepeatMode::from_u8(repeat_mode.load(Ordering::Relaxed)),
+                )?;
+                let path = q.tracks.get(idx)?.clone();
+                let uri = glib::filename_to_uri(&path, None).ok()?;
+                *pending = Some(GaplessPending {
+                    index: idx,
+                    path,
+                    uri: uri.to_string(),
+                });
+                Some(uri)
+            };
+            if let Some(uri) = next_uri {
+                pb.set_property("uri", &uri);
+            }
+            None
+        });
     }
     pub fn load(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
@@ -223,17 +311,7 @@ impl AudioEngine {
         Ok(())
     }
 
-    fn set_track(&self, path: &Path) -> Result<()> {
-        let uri = glib::filename_to_uri(path, None).context("converter caminho para URI")?;
-        // playbin can reject a URI change while PAUSED/PLAYING.  READY keeps
-        // the sink alive while fully releasing the previous stream.
-        let bus = self.playbin.bus().expect("bus do player");
-        bus.set_flushing(true);
-        let ready = self.playbin.set_state(gst::State::Ready);
-        bus.set_flushing(false);
-        ready.map_err(|e| anyhow::anyhow!("preparar nova faixa: {e:?}"))?;
-        self.playbin.set_property("uri", &uri);
-        let expected_uri = uri.to_string();
+    fn apply_track_metadata(&self, path: &Path, expected_uri: String) {
         let initial_cover = if path.is_file() {
             match find_cached_or_local_cover(path) {
                 Ok(cover) => cover,
@@ -266,13 +344,75 @@ impl AudioEngine {
             title: path
                 .file_stem()
                 .and_then(|s| s.to_str())
-                .unwrap_or("Faixa")
+                .unwrap_or("Track")
                 .into(),
             cover_path: initial_cover,
             ..Default::default()
         };
+        drop(m);
         self.metadata_ver.fetch_add(1, Ordering::Relaxed);
         self.track_seq.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn apply_current_rate(&self, pos_us: i64) {
+        let cur_rate = self.rate();
+        if (cur_rate - 1.0).abs() > 0.002 {
+            let pos = (pos_us.max(0) as u64).saturating_mul(1000);
+            let seek_event = gst::event::Seek::new(
+                cur_rate,
+                gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
+                gst::SeekType::Set,
+                gst::ClockTime::from_nseconds(pos),
+                gst::SeekType::None,
+                gst::ClockTime::NONE,
+            );
+            let _ = self.playbin.send_event(seek_event);
+        }
+    }
+
+    fn commit_pending_gapless(&self, apply_rate: bool) {
+        let committed = {
+            let mut queue = self.queue.lock().unwrap();
+            let Some(pending) = self.pending_gapless.lock().unwrap().take() else {
+                return;
+            };
+            if self.state() == PlaybackState::Stopped {
+                return;
+            }
+            if queue.tracks.get(pending.index) == Some(&pending.path) {
+                queue.current = Some(pending.index);
+            } else if let Some(pos) = queue.tracks.iter().position(|p| p == &pending.path) {
+                queue.current = Some(pos);
+            }
+            pending
+        };
+        self.apply_track_metadata(&committed.path, committed.uri);
+        let d = self
+            .playbin
+            .query_duration::<gst::ClockTime>()
+            .map(|v| v.nseconds() as i64 / 1000)
+            .unwrap_or(0);
+        if d > 0 {
+            self.metadata.lock().unwrap().duration_us = d;
+            self.metadata_ver.fetch_add(1, Ordering::Relaxed);
+        }
+        if apply_rate {
+            self.apply_current_rate(0);
+        }
+    }
+
+    fn set_track(&self, path: &Path) -> Result<()> {
+        let uri = glib::filename_to_uri(path, None).context("converter caminho para URI")?;
+        // playbin can reject a URI change while PAUSED/PLAYING.  READY keeps
+        // the sink alive while fully releasing the previous stream.
+        let bus = self.playbin.bus().expect("bus do player");
+        bus.set_flushing(true);
+        let ready = self.playbin.set_state(gst::State::Ready);
+        bus.set_flushing(false);
+        ready.map_err(|e| anyhow::anyhow!("preparar nova faixa: {e:?}"))?;
+        *self.pending_gapless.lock().unwrap() = None;
+        self.playbin.set_property("uri", &uri);
+        self.apply_track_metadata(path, uri.to_string());
         Ok(())
     }
 
@@ -304,7 +444,10 @@ impl AudioEngine {
     pub fn enqueue_files(&self, tracks: &[PathBuf], next: bool) -> Result<()> {
         anyhow::ensure!(
             tracks.iter().all(|p| p.is_absolute() && p.is_file()),
-            "Uma das músicas não está disponível. Atualize a biblioteca e tente novamente."
+            crate::i18n::pick(
+                "One of the tracks is not available. Refresh your library and try again.",
+                "Uma das músicas não está disponível. Atualize a biblioteca e tente novamente.",
+            )
         );
         let mut queue = self.queue.lock().unwrap();
         if queue.tracks.is_empty() {
@@ -341,7 +484,7 @@ impl AudioEngine {
         let mut queue = self.queue.lock().unwrap();
         anyhow::ensure!(
             queue.accepts(revision, index),
-            "A fila mudou. Tente novamente."
+            crate::i18n::pick("The queue changed. Try again.", "A fila mudou. Tente novamente.")
         );
         self.set_track(&queue.tracks[index])?;
         queue.current = Some(index);
@@ -352,7 +495,7 @@ impl AudioEngine {
         let mut queue = self.queue.lock().unwrap();
         anyhow::ensure!(
             queue.accepts(revision, from) && to < queue.tracks.len(),
-            "A fila mudou. Tente novamente."
+            crate::i18n::pick("The queue changed. Try again.", "A fila mudou. Tente novamente.")
         );
         queue.move_item(from, to);
         Ok(())
@@ -362,12 +505,13 @@ impl AudioEngine {
         let mut queue = self.queue.lock().unwrap();
         anyhow::ensure!(
             queue.accepts(revision, index),
-            "A fila mudou. Tente novamente."
+            crate::i18n::pick("The queue changed. Try again.", "A fila mudou. Tente novamente.")
         );
         let removing_current = queue.current == Some(index);
         let previous = self.state();
         queue.remove(index);
         if removing_current {
+            *self.pending_gapless.lock().unwrap() = None;
             if let Some(current) = queue.current {
                 self.set_track(&queue.tracks[current])?;
                 self.resume_after_load(previous)?;
@@ -378,6 +522,15 @@ impl AudioEngine {
                 self.set_state(PlaybackState::Stopped);
                 *self.metadata.lock().unwrap() = TrackMetadata::default();
                 self.metadata_ver.fetch_add(1, Ordering::Relaxed);
+            }
+        } else {
+            let mut pending_guard = self.pending_gapless.lock().unwrap();
+            if let Some(pending) = pending_guard.as_mut() {
+                if pending.index == index {
+                    *pending_guard = None;
+                } else if pending.index > index {
+                    pending.index -= 1;
+                }
             }
         }
         Ok(())
@@ -413,37 +566,8 @@ impl AudioEngine {
     /// Avança automaticamente respeitando RepeatMode e Shuffle.
     pub fn advance_after_eos(&self) -> Result<bool> {
         let mut queue = self.queue.lock().unwrap();
-        let len = queue.tracks.len();
-        if len == 0 {
-            self.stop()?;
-            return Ok(false);
-        }
-
-        let repeat = self.repeat_mode();
-        if repeat == RepeatMode::Track {
-            if let Some(index) = queue.current.filter(|i| *i < len) {
-                self.set_track(&queue.tracks[index])?;
-                self.play()?;
-                return Ok(true);
-            }
-        }
-
-        let next_idx = if self.shuffle() {
-            pick_shuffle_index(queue.current, len)
-        } else {
-            let next = queue
-                .current
-                .and_then(|i| i.checked_add(1))
-                .filter(|i| *i < len);
-            if next.is_some() {
-                next
-            } else if repeat == RepeatMode::All {
-                Some(0)
-            } else {
-                None
-            }
-        };
-
+        *self.pending_gapless.lock().unwrap() = None;
+        let next_idx = next_auto_index_from(&queue, self.shuffle(), self.repeat_mode());
         if let Some(index) = next_idx {
             self.set_track(&queue.tracks[index])?;
             queue.current = Some(index);
@@ -518,22 +642,15 @@ impl AudioEngine {
             .map_err(|e| anyhow::anyhow!("play: {e:?}"))?;
         *self.state.lock().unwrap() = PlaybackState::Playing;
 
-        let cur_rate = self.rate();
-        if (cur_rate - 1.0).abs() > 0.002 {
-            let pos = self.position_us() * 1000;
-            let seek_event = gst::event::Seek::new(
-                cur_rate,
-                gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
-                gst::SeekType::Set,
-                gst::ClockTime::from_nseconds(pos.max(0) as u64),
-                gst::SeekType::None,
-                gst::ClockTime::NONE,
-            );
-            let _ = self.playbin.send_event(seek_event);
-        }
+        self.apply_current_rate(self.position_us());
         Ok(())
     }
     pub fn pause(&self) -> Result<()> {
+        if self.state() == PlaybackState::Stopped
+            && self.playbin.current_state() != gst::State::Playing
+        {
+            return Ok(());
+        }
         self.playbin
             .set_state(gst::State::Paused)
             .map(|_| ())
@@ -542,6 +659,7 @@ impl AudioEngine {
         Ok(())
     }
     pub fn stop(&self) -> Result<()> {
+        *self.pending_gapless.lock().unwrap() = None;
         self.playbin
             .set_state(gst::State::Ready)
             .map(|_| ())
@@ -550,6 +668,7 @@ impl AudioEngine {
         Ok(())
     }
     pub fn stop_after_error(&self) -> Result<()> {
+        *self.pending_gapless.lock().unwrap() = None;
         self.playbin
             .set_state(gst::State::Null)
             .map_err(|e| anyhow::anyhow!("encerrar áudio após falha: {e:?}"))?;
@@ -557,12 +676,26 @@ impl AudioEngine {
         Ok(())
     }
     pub fn seek_us(&self, position: i64) -> Result<()> {
-        self.playbin
-            .seek_simple(
-                gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
-                gst::ClockTime::from_mseconds((position.max(0) / 1000) as u64),
-            )
-            .context("seek")
+        let cur_rate = self.rate();
+        let pos_ns = (position.max(0) as u64).saturating_mul(1000);
+        let seek_event = gst::event::Seek::new(
+            cur_rate,
+            gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+            gst::SeekType::Set,
+            gst::ClockTime::from_nseconds(pos_ns),
+            gst::SeekType::None,
+            gst::ClockTime::NONE,
+        );
+        if self.playbin.send_event(seek_event) {
+            Ok(())
+        } else {
+            self.playbin
+                .seek_simple(
+                    gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                    gst::ClockTime::from_nseconds(pos_ns),
+                )
+                .context("seek")
+        }
     }
     pub fn set_volume(&self, volume: f64) {
         self.playbin.set_property("volume", volume.clamp(0.0, 1.0));
@@ -674,6 +807,12 @@ impl AudioEngine {
                 }
                 if let Some(v) = tags.tags().get::<gst::tags::Artist>() {
                     m.artist = v.get().to_string();
+                } else if m.artist.is_empty() {
+                    if let Some(v) = tags.tags().get::<gst::tags::AlbumArtist>() {
+                        m.artist = v.get().to_string();
+                    } else if let Some(v) = tags.tags().get::<gst::tags::Performer>() {
+                        m.artist = v.get().to_string();
+                    }
                 }
                 if let Some(v) = tags.tags().get::<gst::tags::Album>() {
                     m.album = v.get().to_string();
@@ -698,7 +837,10 @@ impl AudioEngine {
                 drop(m);
                 self.metadata_ver.fetch_add(1, Ordering::Relaxed);
             }
-            MessageView::StreamStart(_) => self.refresh_stream_info(),
+            MessageView::StreamStart(_) => {
+                self.commit_pending_gapless(true);
+                self.refresh_stream_info();
+            }
             MessageView::AsyncDone(_) | MessageView::DurationChanged(_) => {
                 let d = self
                     .playbin
@@ -709,6 +851,7 @@ impl AudioEngine {
                 self.metadata_ver.fetch_add(1, Ordering::Relaxed);
             }
             MessageView::Error(error) => {
+                self.commit_pending_gapless(false);
                 eprintln!(
                     "GStreamer audio error: {} ({:?})",
                     error.error(),
@@ -728,7 +871,10 @@ impl AudioEngine {
         };
         let Some(s) = caps.structure(0) else { return };
         let mut m = self.metadata.lock().unwrap();
-        m.codec = s.name().to_string();
+        let name = s.name();
+        if m.codec.is_empty() || name != "audio/x-raw" {
+            m.codec = name.to_string();
+        }
         m.sample_rate = s.get::<i32>("rate").ok();
         m.bit_depth = s.get::<i32>("depth").ok();
         drop(m);
@@ -900,8 +1046,7 @@ pub(crate) fn find_cover(path: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn album_queue_preserves_order_and_stops_after_last_track() {
+    fn test_fakesink_engine(connect_gapless_cb: bool) -> AudioEngine {
         gst::init().unwrap();
         let playbin = gst::ElementFactory::make("playbin3").build().unwrap();
         let sink = gst::ElementFactory::make("fakesink").build().unwrap();
@@ -919,7 +1064,37 @@ mod tests {
             level_l: Arc::new(AtomicU32::new((-80.0f32).to_bits())),
             level_r: Arc::new(AtomicU32::new((-80.0f32).to_bits())),
             rate: Arc::new(AtomicU32::new((1.0f32).to_bits())),
+            pending_gapless: Default::default(),
         };
+        if connect_gapless_cb {
+            engine.connect_gapless();
+        }
+        engine
+    }
+
+    fn make_wav_bytes(samples: usize) -> Vec<u8> {
+        let data_bytes = (samples * 2) as u32;
+        let riff_size = 36 + data_bytes;
+        let mut wav = Vec::with_capacity(44 + data_bytes as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&riff_size.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&8000u32.to_le_bytes());
+        wav.extend_from_slice(&16000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_bytes.to_le_bytes());
+        wav.resize(44 + data_bytes as usize, 0);
+        wav
+    }
+
+    #[test]
+    fn album_queue_preserves_order_and_stops_after_last_track() {
+        let engine = test_fakesink_engine(false);
         assert!(engine.play_album(&[], 0).is_err());
         let dir = std::env::temp_dir().join(format!(
             "vinyl-album-test-{}-{}",
@@ -1230,5 +1405,118 @@ mod tests {
         let (l3, r3) = engine.vu_levels();
         assert_eq!(l3, -80.0);
         assert_eq!(r3, -80.0);
+    }
+
+    #[test]
+    fn pause_while_stopped_keeps_stopped_state() {
+        let engine = AudioEngine::with_queue(Vec::new(), None).unwrap();
+        assert_eq!(engine.state(), PlaybackState::Stopped);
+        engine.pause().unwrap();
+        assert_eq!(engine.state(), PlaybackState::Stopped);
+    }
+
+    #[test]
+    fn gapless_about_to_finish_transitions_without_eos() {
+        let engine = test_fakesink_engine(true);
+        let dir = std::env::temp_dir().join(format!(
+            "vinyl-gapless-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let wav = make_wav_bytes(1600); // 200 ms at 8 kHz
+        let t1 = dir.join("01.wav");
+        let t2 = dir.join("02.wav");
+        std::fs::write(&t1, &wav).unwrap();
+        std::fs::write(&t2, &wav).unwrap();
+
+        engine.play_files(&[t1.clone(), t2.clone()], 0).unwrap();
+        let start_seq = engine.track_sequence();
+        let mut switched_gaplessly = false;
+        let mut saw_eos_before_switch = false;
+        let mut saw_final_eos = false;
+        let bus = engine.element().bus().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(50)) {
+                match msg.view() {
+                    gst::MessageView::Eos(_) => {
+                        if !switched_gaplessly {
+                            saw_eos_before_switch = true;
+                        } else {
+                            saw_final_eos = true;
+                            break;
+                        }
+                    }
+                    gst::MessageView::Error(err) => {
+                        panic!("unexpected GStreamer error: {:?}", err.error());
+                    }
+                    _ => {
+                        engine.handle_message(&msg);
+                        if !switched_gaplessly && engine.track_sequence() > start_seq {
+                            switched_gaplessly = true;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            !saw_eos_before_switch,
+            "Eos must not fire between gapless tracks"
+        );
+        assert!(
+            switched_gaplessly,
+            "about-to-finish should transition from track 1 to track 2"
+        );
+        assert!(saw_final_eos, "final track should finish with Eos");
+        assert_eq!(engine.queue_snapshot().current, Some(1));
+        assert!(engine.metadata().uri.ends_with("02.wav"));
+        assert!(!engine.advance_after_eos().unwrap());
+        assert_eq!(engine.state(), PlaybackState::Stopped);
+        let _ = engine.playbin.set_state(gst::State::Null);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn seek_us_preserves_playback_rate() {
+        let engine = test_fakesink_engine(false);
+        let dir = std::env::temp_dir().join(format!(
+            "vinyl-seek-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let wav = make_wav_bytes(8000); // 1000 ms at 8 kHz
+        let t1 = dir.join("seek_test.wav");
+        std::fs::write(&t1, &wav).unwrap();
+
+        engine.play_files(&[t1], 0).unwrap();
+        let bus = engine.element().bus().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            if let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(50)) {
+                engine.handle_message(&msg);
+                if let gst::MessageView::AsyncDone(_) = msg.view() {
+                    break;
+                }
+            }
+        }
+
+        engine.set_rate(1.05);
+        assert!((engine.rate() - 1.05).abs() < 0.001);
+
+        // Seek deve suceder e preservar o rate customizado de 1.05x
+        let seek_res = engine.seek_us(100_000); // 100 ms
+        assert!(seek_res.is_ok(), "seek_us deve ser aceito pelo pipeline: {seek_res:?}");
+        assert!((engine.rate() - 1.05).abs() < 0.001);
+
+        let _ = engine.playbin.set_state(gst::State::Null);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

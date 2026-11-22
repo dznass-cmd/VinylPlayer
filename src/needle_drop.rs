@@ -5,8 +5,12 @@
 //! atrito quente de micro-ranhuras (lead-in groove rumble com modulação a 33 RPM)
 //! e micro-estática sutil antes da faixa iniciar.
 
-use std::path::PathBuf;
 use gstreamer as gst;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+static NEEDLE_DROP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Gera em memória um arquivo WAV (PCM 16-bit, 44.1 kHz, Mono) sintetizando o pouso da agulha.
 pub fn generate_needle_drop_wav() -> Vec<u8> {
@@ -107,41 +111,84 @@ pub fn ensure_needle_drop_wav() -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(&cache_dir)?;
     let wav_path = cache_dir.join("needle_drop_v1.wav");
 
-    if !wav_path.exists() || std::fs::metadata(&wav_path)?.len() < 1000 {
+    let needs_generation = match std::fs::metadata(&wav_path) {
+        Ok(meta) => meta.len() < 1000,
+        Err(_) => true,
+    };
+    if needs_generation {
         let bytes = generate_needle_drop_wav();
-        std::fs::write(&wav_path, bytes)?;
+        let tmp_path = cache_dir.join(format!(
+            ".needle_drop.{}.{}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::write(&tmp_path, bytes)?;
+        let _ = std::fs::rename(&tmp_path, &wav_path);
     }
 
     Ok(wav_path)
 }
 
+fn build_needle_drop_pipeline(path: &Path) -> Option<gst::Pipeline> {
+    use gst::prelude::*;
+    let _ = gst::init();
+    let pipeline = gst::Pipeline::new();
+    let filesrc = gst::ElementFactory::make("filesrc")
+        .property("location", path)
+        .build()
+        .ok()?;
+    let wavparse = gst::ElementFactory::make("wavparse").build().ok()?;
+    let convert = gst::ElementFactory::make("audioconvert").build().ok()?;
+    let resample = gst::ElementFactory::make("audioresample").build().ok()?;
+    let volume = gst::ElementFactory::make("volume")
+        .property("volume", 0.72_f64)
+        .build()
+        .ok()?;
+    let sink = gst::ElementFactory::make("autoaudiosink").build().ok()?;
+    pipeline
+        .add_many([&filesrc, &wavparse, &convert, &resample, &volume, &sink])
+        .ok()?;
+    gst::Element::link_many([&filesrc, &wavparse, &convert, &resample, &volume, &sink]).ok()?;
+    Some(pipeline)
+}
+
 /// Dispara a reprodução do needle drop em uma thread de segundo plano desacoplada,
 /// sem bloquear a thread da interface gráfica.
 pub fn play_needle_drop() {
-    std::thread::spawn(|| {
-        let Ok(path) = ensure_needle_drop_wav() else {
-            return;
-        };
-        let path_str = path.to_string_lossy();
-        let pipeline_str = format!(
-            "filesrc location=\"{}\" ! wavparse ! audioconvert ! audioresample ! volume volume=0.72 ! autoaudiosink",
-            path_str
-        );
-        if let Ok(pipeline) = gst::parse::launch(&pipeline_str) {
+    let seq = NEEDLE_DROP_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    std::thread::Builder::new()
+        .name("vinyl-needle-drop".into())
+        .spawn(move || {
+            let Ok(path) = ensure_needle_drop_wav() else {
+                return;
+            };
+            let Some(pipeline) = build_needle_drop_pipeline(&path) else {
+                return;
+            };
             use gst::prelude::*;
             let _ = pipeline.set_state(gst::State::Playing);
             if let Some(bus) = pipeline.bus() {
-                for msg in bus.iter_timed(gst::ClockTime::from_mseconds(850)) {
-                    use gst::MessageView;
-                    match msg.view() {
-                        MessageView::Eos(..) | MessageView::Error(..) => break,
-                        _ => {}
+                let deadline = Instant::now() + Duration::from_millis(900);
+                while NEEDLE_DROP_SEQ.load(Ordering::Relaxed) == seq {
+                    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                        break;
+                    };
+                    let slice = remaining.min(Duration::from_millis(100));
+                    if let Some(msg) = bus.timed_pop(gst::ClockTime::from_nseconds(slice.as_nanos() as u64)) {
+                        use gst::MessageView;
+                        match msg.view() {
+                            MessageView::Eos(..) | MessageView::Error(..) => break,
+                            _ => {}
+                        }
                     }
                 }
             }
             let _ = pipeline.set_state(gst::State::Null);
-        }
-    });
+        })
+        .ok();
 }
 
 #[cfg(test)]
@@ -182,5 +229,16 @@ mod tests {
         assert!(path.exists());
         let meta = std::fs::metadata(&path).expect("metadados do arquivo");
         assert!(meta.len() > 10000);
+    }
+
+    #[test]
+    fn build_pipeline_handles_special_characters_in_path() {
+        let path = std::env::temp_dir().join("needle \"drop\" 'test' \\ dir.wav");
+        let pipeline = build_needle_drop_pipeline(&path);
+        assert!(pipeline.is_some());
+        if let Some(p) = pipeline {
+            use gst::prelude::*;
+            let _ = p.set_state(gst::State::Null);
+        }
     }
 }

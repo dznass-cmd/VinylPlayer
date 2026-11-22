@@ -25,7 +25,7 @@ fn show_track_notification(title: &str, artist: &str, album: &str, cover_path: O
         body_parts.push(alb);
     }
     let body = if body_parts.is_empty() {
-        "Alta Fidelidade Analógica".to_string()
+        i18n::pick("High-Fidelity Analog Audio", "Alta Fidelidade Analógica").to_string()
     } else {
         body_parts.join(" · ")
     };
@@ -70,6 +70,7 @@ pub(crate) fn show_system_notification(summary: &str, body: &str) {
 mod audio;
 mod donate;
 mod file_open;
+mod i18n;
 mod library;
 mod library_settings;
 mod library_sources;
@@ -89,6 +90,11 @@ mod theme;
 mod turntable;
 mod volume_hud;
 mod vu_meter;
+
+thread_local! {
+    static RAISE_WINDOWS: RefCell<Vec<glib::WeakRef<ApplicationWindow>>> = const { RefCell::new(Vec::new()) };
+    static BASE_CSS_PROVIDER: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };
+}
 
 pub(crate) use turntable::{CachedCover, TurntableCache, TurntableLayout, TurntableRenderParams, draw_turntable};
 pub(crate) use volume_hud::VolumeHudState;
@@ -122,6 +128,7 @@ fn build_ui_with_catalog(
     state_mgr: state::StateManager,
 ) -> (Arc<AudioEngine>, Rc<library_settings::Catalog>) {
     let initial_state = state_mgr.snapshot();
+    i18n::init_from_state(initial_state.language.as_deref());
     let initial_theme = theme::Theme::from_id(initial_state.theme());
     theme::apply_theme(initial_theme);
 
@@ -165,8 +172,31 @@ fn build_ui_with_catalog(
         }
     }
     let audio_mpris = audio.clone();
+    let raise_cb: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {
+        glib::MainContext::default().invoke(|| {
+            RAISE_WINDOWS.with(|cell| {
+                let mut windows = cell.borrow_mut();
+                windows.retain(|w| w.upgrade().is_some());
+                if let Some(win) = windows.last().and_then(|w| w.upgrade()) {
+                    win.present();
+                }
+            });
+        });
+    });
+    let quit_cb: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {
+        glib::MainContext::default().invoke(|| {
+            RAISE_WINDOWS.with(|cell| {
+                let windows = cell.borrow();
+                for win in windows.iter() {
+                    if let Some(w) = win.upgrade() {
+                        w.close();
+                    }
+                }
+            });
+        });
+    });
     glib::MainContext::default().spawn_local(async move {
-        let _ = mpris::serve(audio_mpris).await;
+        let _ = mpris::serve(audio_mpris, raise_cb, quit_cb).await;
     });
 
     let playing = Rc::new(Cell::new(false));
@@ -186,7 +216,7 @@ fn build_ui_with_catalog(
 
     let search_hub = search::SearchHub::new();
 
-    let title_label = gtk::Label::new(Some("Turntable"));
+    let title_label = gtk::Label::new(Some(i18n::nav_title(i18n::current(), "overview")));
     title_label.add_css_class("page-title");
     title_label.set_hexpand(true);
     title_label.set_xalign(0.0);
@@ -195,6 +225,19 @@ fn build_ui_with_catalog(
     stack.set_widget_name("main-pages");
     stack.set_hexpand(true);
     stack.set_vexpand(true);
+    {
+        let title_weak = title_label.downgrade();
+        let stack_weak = stack.downgrade();
+        i18n::connect(&title_label, move |lang| {
+            if let (Some(tl), Some(st)) = (title_weak.upgrade(), stack_weak.upgrade()) {
+                let page = st.visible_child_name().unwrap_or_else(|| "overview".into());
+                tl.set_text(i18n::nav_title(lang, &page));
+            }
+        });
+    }
+
+    let catalog = library_settings::Catalog::new(state_mgr.clone());
+    let initial_tracks = catalog.report.borrow().tracks.clone();
 
     let queue = queue_view::QueuePanel::new(&audio);
     let queue_split = adw::OverlaySplitView::builder()
@@ -209,15 +252,27 @@ fn build_ui_with_catalog(
 
     let content = gtk::Box::new(Orientation::Vertical, 0);
     content.set_hexpand(true);
-    let topbar = header(&audio, &search_hub, &stack, &nav_buttons, &title_label)
-        .downcast::<gtk::Box>()
-        .unwrap();
+    let (topbar_widget, search_entry, open_btn) = header(
+        &audio,
+        &search_hub,
+        &stack,
+        &nav_buttons,
+        &title_label,
+        &catalog,
+    );
+    let Ok(topbar) = topbar_widget.downcast::<gtk::Box>() else {
+        return (audio, catalog);
+    };
     let queue_toggle = gtk::ToggleButton::new();
     queue_toggle.add_css_class("queue-toggle");
-    queue_toggle.set_tooltip_text(Some("Toggle queue · Ctrl+J"));
+    i18n::bind_tooltip(&queue_toggle, |l| {
+        i18n::pick_for(l, "Toggle queue · Ctrl+J", "Alternar fila · Ctrl+J")
+    });
     let queue_label = gtk::Box::new(Orientation::Horizontal, 7);
     queue_label.append(&gtk::Image::from_icon_name("view-list-symbolic"));
-    queue_label.append(&gtk::Label::new(Some("Queue")));
+    let queue_btn_txt = gtk::Label::new(None);
+    i18n::bind_label(&queue_btn_txt, |l| i18n::pick_for(l, "Queue", "Fila"));
+    queue_label.append(&queue_btn_txt);
     queue_toggle.set_child(Some(&queue_label));
     queue_toggle
         .bind_property("active", &queue_split, "show-sidebar")
@@ -238,8 +293,6 @@ fn build_ui_with_catalog(
         ),
         Some("overview"),
     );
-    let catalog = library_settings::Catalog::new(state_mgr.clone());
-    let initial_tracks = catalog.report.borrow().tracks.clone();
 
     stack.add_named(
         &library_view(&audio, false, &search_hub, &state_mgr, initial_tracks.clone()),
@@ -266,6 +319,15 @@ fn build_ui_with_catalog(
     let seed_revision = audio.queue_status().0;
     let last_tracks = Rc::new(RefCell::new(initial_tracks));
     let last_tracks_cb = last_tracks.clone();
+    {
+        let cat_i18n = catalog.clone();
+        let status_weak_i18n = library_status.downgrade();
+        i18n::connect(&library_status, move |_| {
+            if let Some(lbl) = status_weak_i18n.upgrade() {
+                lbl.set_text(&cat_i18n.summary());
+            }
+        });
+    }
     catalog.connect(&stack, move |catalog| {
         if let Some(label) = weak_status.upgrade() {
             label.set_text(&catalog.summary());
@@ -383,7 +445,7 @@ fn build_ui_with_catalog(
                     st.set_visible_child_name("overview");
                 }
                 if let Some(tl) = title_weak.upgrade() {
-                    tl.set_text("Turntable");
+                    tl.set_text(i18n::nav_title(i18n::current(), "overview"));
                 }
                 for (b, page) in &nav_btns {
                     if *page == "overview" {
@@ -449,17 +511,17 @@ fn build_ui_with_catalog(
         .expect("escutar eventos de áudio");
 
     let all_buttons: Vec<gtk::Button> = nav_buttons.iter().map(|(b, _, _)| b.clone()).collect();
-    for (button, page, title) in &nav_buttons {
+    for (button, page, _title) in &nav_buttons {
         let stack = stack.clone();
         let title_label = title_label.clone();
         let all_btns = all_buttons.clone();
         let curr_btn = button.clone();
         let page_name = page.to_string();
-        let title_text = *title;
+        let page_key = *page;
         let state_nav = state_mgr.clone();
         button.connect_clicked(move |_| {
             stack.set_visible_child_name(&page_name);
-            title_label.set_text(title_text);
+            title_label.set_text(i18n::nav_title(i18n::current(), page_key));
             for b in &all_btns {
                 b.remove_css_class("active-nav");
             }
@@ -471,10 +533,10 @@ fn build_ui_with_catalog(
     // Restaura a visão ativa salva
     let saved_view = &initial_state.active_view;
     stack.set_visible_child_name(saved_view);
-    for (btn, page, title) in &nav_buttons {
+    for (btn, page, _title) in &nav_buttons {
         if page == saved_view {
             btn.add_css_class("active-nav");
-            title_label.set_text(title);
+            title_label.set_text(i18n::nav_title(i18n::current(), page));
         } else {
             btn.remove_css_class("active-nav");
         }
@@ -483,36 +545,76 @@ fn build_ui_with_catalog(
     body.append(&nav);
     body.append(&content);
     root.append(&body);
-    root.append(&player_bar(
+    let (player_bar_widget, mute_btn, shuffle_btn, repeat_btn) = player_bar(
         &playing,
         &audio,
         &state_mgr,
         &queue,
         &playback_errors,
         &volume_hud,
-    ));
+    );
+    root.append(&player_bar_widget);
 
     let window = ApplicationWindow::builder()
         .application(app)
-        .title(format!("VinylPlayer v{} — High-Fidelity Audio", env!("CARGO_PKG_VERSION")))
+        .title(i18n::window_title(i18n::current(), env!("CARGO_PKG_VERSION")))
         .default_width(1220)
         .default_height(780)
         .child(&root)
         .build();
+    {
+        let win_weak = window.downgrade();
+        i18n::connect(&window, move |lang| {
+            if let Some(win) = win_weak.upgrade() {
+                win.set_title(Some(&i18n::window_title(lang, env!("CARGO_PKG_VERSION"))));
+            }
+        });
+    }
+    RAISE_WINDOWS.with(|cell| {
+        let mut windows = cell.borrow_mut();
+        windows.retain(|w| w.upgrade().is_some());
+        windows.push(window.downgrade());
+    });
     let show_turntable = gtk::gio::SimpleAction::new("show-turntable", None);
     playback_errors.attach(&window);
-    let overview = nav_buttons
-        .iter()
-        .find(|(_, page, _)| *page == "overview")
-        .unwrap()
-        .0
-        .clone();
-    show_turntable.connect_activate(move |_, _| overview.emit_clicked());
+    if let Some((overview, _, _)) = nav_buttons.iter().find(|(_, page, _)| *page == "overview") {
+        let btn = overview.clone();
+        show_turntable.connect_activate(move |_, _| btn.emit_clicked());
+    }
     window.add_action(&show_turntable);
     let toggle_queue = gtk::gio::SimpleAction::new("toggle-queue", None);
     let split = queue_split.clone();
     toggle_queue.connect_activate(move |_, _| split.set_show_sidebar(!split.shows_sidebar()));
     window.add_action(&toggle_queue);
+
+    let focus_search = gtk::gio::SimpleAction::new("focus-search", None);
+    let search_weak = search_entry.downgrade();
+    focus_search.connect_activate(move |_, _| {
+        if let Some(entry) = search_weak.upgrade() {
+            entry.grab_focus();
+            entry.select_region(0, -1);
+        }
+    });
+    window.add_action(&focus_search);
+
+    let open_track_action = gtk::gio::SimpleAction::new("open-track", None);
+    let open_weak = open_btn.downgrade();
+    open_track_action.connect_activate(move |_, _| {
+        if let Some(btn) = open_weak.upgrade() {
+            btn.emit_clicked();
+        }
+    });
+    window.add_action(&open_track_action);
+
+    let toggle_mute_action = gtk::gio::SimpleAction::new("toggle-mute", None);
+    let mute_action_weak = mute_btn.downgrade();
+    toggle_mute_action.connect_activate(move |_, _| {
+        if let Some(btn) = mute_action_weak.upgrade() {
+            btn.emit_clicked();
+        }
+    });
+    window.add_action(&toggle_mute_action);
+
     let library_action = gtk::gio::SimpleAction::new("library-settings", None);
     let weak_window = window.downgrade();
     let settings_window = Rc::new(RefCell::new(glib::WeakRef::<gtk::Window>::new()));
@@ -547,6 +649,9 @@ fn build_ui_with_catalog(
     window.add_action(&donate_action);
     app.set_accels_for_action("win.donate", &["<Control><Shift>d"]);
     app.set_accels_for_action("win.toggle-queue", &["<Control>j"]);
+    app.set_accels_for_action("win.focus-search", &["<Control>f"]);
+    app.set_accels_for_action("win.library-settings", &["<Control>comma"]);
+    app.set_accels_for_action("win.open-track", &["<Control>o"]);
     let bus_watch = RefCell::new(Some(bus_watch));
     let state_close = state_mgr.clone();
     let audio_close = audio.clone();
@@ -558,10 +663,20 @@ fn build_ui_with_catalog(
             let dialog = adw::MessageDialog::builder()
                 .transient_for(window)
                 .destroy_with_parent(true)
-                .heading("Could not save preferences")
-                .body(format!("Changes remain pending. Check disk space and permissions in the configuration directory and try closing again.\n\n{error}"))
+                .heading(i18n::pick(
+                    "Could not save preferences",
+                    "Não foi possível salvar as preferências",
+                ))
+                .body(match i18n::current() {
+                    i18n::Language::En => format!(
+                        "Changes remain pending. Check disk space and permissions in the configuration directory and try closing again.\n\n{error}"
+                    ),
+                    i18n::Language::PtBr => format!(
+                        "As alterações permanecem pendentes. Verifique o espaço em disco e as permissões no diretório de configurações e tente fechar novamente.\n\n{error}"
+                    ),
+                })
                 .build();
-            dialog.add_response("back", "Back to player");
+            dialog.add_response("back", i18n::pick("Back to player", "Voltar ao player"));
             dialog.set_close_response("back");
             dialog.present();
             return glib::Propagation::Stop;
@@ -577,10 +692,30 @@ fn build_ui_with_catalog(
     let key_state = state_mgr.clone();
     let key_hud = volume_hud.clone();
     let key_win = window.downgrade();
+    let key_mute = mute_btn.downgrade();
+    let key_shuffle = shuffle_btn.downgrade();
+    let key_repeat = repeat_btn.downgrade();
+    let key_nav_btns: Vec<gtk::Button> = nav_buttons.iter().map(|(b, _, _)| b.clone()).collect();
     key_controller.connect_key_pressed(move |_, keyval, _, modifier| {
+        if modifier.contains(gdk::ModifierType::ALT_MASK) {
+            let target_idx = match keyval {
+                gdk::Key::_1 => Some(0),
+                gdk::Key::_2 => Some(1),
+                gdk::Key::_3 => Some(2),
+                gdk::Key::_4 => Some(3),
+                _ => None,
+            };
+            if let Some(idx) = target_idx {
+                if let Some(btn) = key_nav_btns.get(idx) {
+                    btn.emit_clicked();
+                    return glib::Propagation::Stop;
+                }
+            }
+            return glib::Propagation::Proceed;
+        }
+
         if modifier.intersects(
             gdk::ModifierType::CONTROL_MASK
-                | gdk::ModifierType::ALT_MASK
                 | gdk::ModifierType::SUPER_MASK,
         ) {
             return glib::Propagation::Proceed;
@@ -617,11 +752,36 @@ fn build_ui_with_catalog(
                 glib::Propagation::Stop
             }
             gdk::Key::Right => {
-                let _ = key_audio.next();
+                if modifier.contains(gdk::ModifierType::SHIFT_MASK) {
+                    let cur = key_audio.position_us();
+                    let dur = key_audio.duration_us();
+                    let target = (cur + 5_000_000).min(dur);
+                    let _ = key_audio.seek_us(target);
+                } else {
+                    let _ = key_audio.next();
+                }
                 glib::Propagation::Stop
             }
             gdk::Key::Left => {
+                if modifier.contains(gdk::ModifierType::SHIFT_MASK) {
+                    let cur = key_audio.position_us();
+                    let target = (cur - 5_000_000).max(0);
+                    let _ = key_audio.seek_us(target);
+                } else {
+                    let _ = key_audio.prev();
+                }
+                glib::Propagation::Stop
+            }
+            gdk::Key::Page_Down => {
+                let _ = key_audio.next();
+                glib::Propagation::Stop
+            }
+            gdk::Key::Page_Up => {
                 let _ = key_audio.prev();
+                glib::Propagation::Stop
+            }
+            gdk::Key::Home => {
+                let _ = key_audio.seek_us(0);
                 glib::Propagation::Stop
             }
             gdk::Key::Up => {
@@ -639,6 +799,30 @@ fn build_ui_with_catalog(
                 key_state.update_volume(new_vol);
                 key_hud.borrow_mut().trigger(new_vol);
                 glib::Propagation::Stop
+            }
+            gdk::Key::m | gdk::Key::M => {
+                if let Some(btn) = key_mute.upgrade() {
+                    btn.emit_clicked();
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            }
+            gdk::Key::s | gdk::Key::S => {
+                if let Some(btn) = key_shuffle.upgrade() {
+                    btn.emit_clicked();
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            }
+            gdk::Key::r | gdk::Key::R => {
+                if let Some(btn) = key_repeat.upgrade() {
+                    btn.emit_clicked();
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
             }
             _ => glib::Propagation::Proceed,
         }
@@ -674,33 +858,64 @@ fn sidebar() -> (gtk::Widget, Vec<(gtk::Button, &'static str, &'static str)>) {
     logo_row.append(&version_badge);
     brand_box.append(&logo_row);
 
-    let sub = gtk::Label::new(Some("O RITUAL DE OUVIR"));
+    let sub = gtk::Label::new(None);
+    i18n::bind_label(&sub, |l| {
+        i18n::pick_for(l, "THE LISTENING RITUAL", "O RITUAL DE OUVIR")
+    });
     sub.add_css_class("brand-sub");
     sub.set_xalign(0.0);
     brand_box.append(&sub);
     side.append(&brand_box);
 
-    let sec_lbl = gtk::Label::new(Some("COLEÇÃO"));
+    let sec_lbl = gtk::Label::new(None);
+    i18n::bind_label(&sec_lbl, |l| i18n::pick_for(l, "COLLECTION", "COLEÇÃO"));
     sec_lbl.add_css_class("sidebar-section-title");
     sec_lbl.set_xalign(0.0);
     side.append(&sec_lbl);
 
+    type NavSpec = (
+        &'static str,
+        fn(i18n::Language) -> &'static str,
+        fn(i18n::Language) -> &'static str,
+        &'static str,
+    );
     let mut nav_buttons = Vec::new();
-    let items = [
-        ("media-optical-symbolic", "Turntable", "overview"),
-        ("audio-x-generic-symbolic", "Tracks", "tracks"),
-        ("view-grid-symbolic", "Albums", "albums"),
-        ("view-list-symbolic", "Playlists", "playlists"),
+    let items: [NavSpec; 4] = [
+        (
+            "media-optical-symbolic",
+            |l| i18n::nav_title(l, "overview"),
+            |l| i18n::pick_for(l, "Turntable · Alt+1", "Toca-Discos · Alt+1"),
+            "overview",
+        ),
+        (
+            "audio-x-generic-symbolic",
+            |l| i18n::nav_title(l, "tracks"),
+            |l| i18n::pick_for(l, "Tracks · Alt+2", "Faixas · Alt+2"),
+            "tracks",
+        ),
+        (
+            "view-grid-symbolic",
+            |l| i18n::nav_title(l, "albums"),
+            |l| i18n::pick_for(l, "Albums · Alt+3", "Álbuns · Alt+3"),
+            "albums",
+        ),
+        (
+            "view-list-symbolic",
+            |l| i18n::nav_title(l, "playlists"),
+            |l| i18n::pick_for(l, "Playlists · Alt+4", "Playlists · Alt+4"),
+            "playlists",
+        ),
     ];
 
-    for (idx, (icon, text, page)) in items.iter().enumerate() {
-        let b = labeled_icon_button(icon, text);
+    for (idx, (icon, label_fn, tooltip_fn, page)) in items.iter().enumerate() {
+        let b = labeled_icon_button_i18n(icon, *label_fn);
         b.add_css_class("nav-button");
+        i18n::bind_tooltip(&b, *tooltip_fn);
         if idx == 0 {
             b.add_css_class("active-nav");
         }
         side.append(&b);
-        nav_buttons.push((b, *page, *text));
+        nav_buttons.push((b, *page, *page));
     }
 
     let spacer = gtk::Box::new(Orientation::Vertical, 0);
@@ -710,27 +925,53 @@ fn sidebar() -> (gtk::Widget, Vec<(gtk::Button, &'static str, &'static str)>) {
     // Status do sistema de áudio
     let audio_pill = gtk::Box::new(Orientation::Vertical, 2);
     audio_pill.add_css_class("system-audio-pill");
-    let pipe_lbl = gtk::Label::new(Some("LOCAL LIBRARY"));
+    let pipe_lbl = gtk::Label::new(None);
+    i18n::bind_label(&pipe_lbl, |l| {
+        i18n::pick_for(l, "LOCAL LIBRARY", "BIBLIOTECA LOCAL")
+    });
     pipe_lbl.add_css_class("system-audio-title");
     pipe_lbl.set_xalign(0.0);
-    let sample_lbl = gtk::Label::new(Some("Drag and drop a track to play"));
+    let sample_lbl = gtk::Label::new(None);
+    i18n::bind_label(&sample_lbl, |l| {
+        i18n::pick_for(
+            l,
+            "Drag and drop a track to play",
+            "Arraste e solte uma faixa para tocar",
+        )
+    });
     sample_lbl.add_css_class("system-audio-sub");
     sample_lbl.set_xalign(0.0);
     audio_pill.append(&pipe_lbl);
     audio_pill.append(&sample_lbl);
     side.append(&audio_pill);
 
-    let donate = labeled_icon_button("emblem-favorite-symbolic", "Donate");
+    let donate = labeled_icon_button_i18n("emblem-favorite-symbolic", |l| {
+        i18n::pick_for(l, "Donate", "Apoiar")
+    });
     donate.add_css_class("nav-button");
     donate.add_css_class("donate-nav-button");
     donate.set_action_name(Some("win.donate"));
-    donate.set_tooltip_text(Some("Support VinylPlayer (Ctrl+Shift+D)"));
+    i18n::bind_tooltip(&donate, |l| {
+        i18n::pick_for(
+            l,
+            "Support VinylPlayer (Ctrl+Shift+D)",
+            "Apoiar o VinylPlayer (Ctrl+Shift+D)",
+        )
+    });
     side.append(&donate);
 
-    let settings = labeled_icon_button("preferences-system-symbolic", "Settings");
+    let settings = labeled_icon_button_i18n("preferences-system-symbolic", |l| {
+        i18n::pick_for(l, "Settings", "Configurações")
+    });
     settings.add_css_class("nav-button");
     settings.set_action_name(Some("win.library-settings"));
-    settings.set_tooltip_text(Some("Choose library folders"));
+    i18n::bind_tooltip(&settings, |l| {
+        i18n::pick_for(
+            l,
+            "Settings, theme, language and folders (Ctrl+,)",
+            "Configurações, tema, idioma e pastas (Ctrl+,)",
+        )
+    });
     side.append(&settings);
 
     (side.upcast(), nav_buttons)
@@ -752,18 +993,24 @@ fn library_view(
     outer.set_margin_bottom(18);
     let header_box = gtk::Box::new(Orientation::Horizontal, 16);
     header_box.set_margin_top(18);
-    let heading = gtk::Label::new(Some("Tracks"));
+    let heading = gtk::Label::new(None);
+    i18n::bind_label(&heading, |l| i18n::nav_title(l, "tracks"));
     heading.add_css_class("page-title");
     heading.set_xalign(0.0);
     heading.set_hexpand(true);
     header_box.append(&heading);
 
-    let sort_options = ["Title (A–Z)", "Title (Z–A)", "Path (Default)"];
-    let sort_dropdown = gtk::DropDown::from_strings(&sort_options);
+    let sort_dropdown = gtk::DropDown::from_strings(&[]);
+    i18n::bind_dropdown_strings(&sort_dropdown, |l| match l {
+        i18n::Language::En => &["Title (A–Z)", "Title (Z–A)", "Path (Default)"],
+        i18n::Language::PtBr => &["Título (A–Z)", "Título (Z–A)", "Caminho (Padrão)"],
+    });
     let initial_track_sort = state_mgr.snapshot().track_sort_mode;
     sort_dropdown.set_selected(initial_track_sort as u32);
     sort_dropdown.add_css_class("sort-dropdown");
-    sort_dropdown.set_tooltip_text(Some("Track sort criteria"));
+    i18n::bind_tooltip(&sort_dropdown, |l| {
+        i18n::pick_for(l, "Track sort criteria", "Ordenação das faixas")
+    });
     header_box.append(&sort_dropdown);
     outer.append(&header_box);
 
@@ -779,11 +1026,25 @@ fn library_view(
     let empty_icon = gtk::Image::from_icon_name("edit-find-symbolic");
     empty_icon.set_pixel_size(48);
     empty_icon.add_css_class("album-cover-placeholder");
-    let empty_label = gtk::Label::new(Some(if paths.is_empty() {
-        "Biblioteca vazia. Adicione uma pasta em Configurações."
+    let has_tracks = !paths.is_empty();
+    let empty_label = gtk::Label::new(None);
+    if has_tracks {
+        i18n::bind_label(&empty_label, |l| {
+            i18n::pick_for(
+                l,
+                "No tracks match your search",
+                "Nenhuma música corresponde à busca",
+            )
+        });
     } else {
-        "Nenhuma música corresponde à busca"
-    }));
+        i18n::bind_label(&empty_label, |l| {
+            i18n::pick_for(
+                l,
+                "Library is empty. Add a folder in Settings.",
+                "Biblioteca vazia. Adicione uma pasta em Configurações.",
+            )
+        });
+    }
     empty_label.add_css_class("bottom-artist-title");
     empty_box.append(&empty_icon);
     empty_box.append(&empty_label);
@@ -877,19 +1138,19 @@ fn library_view(
 
     let ft_search = fill_tracks.clone();
     let search_tracks_check = search_hub.clone();
-    search_hub.on_query_changed(move || {
+    search_hub.connect(&outer, move || {
         if !search_tracks_check.query().trim().is_empty() {
             ft_search();
         }
     });
 
-    // Povoa imediatamente se já estiver mapeado ou se a lista for pequena (testes e pastas pequenas)
-    if outer.is_mapped() || track_paths.len() <= 60 {
+    // Povoa imediatamente se já estiver mapeado, houver busca ativa ou lista pequena
+    if outer.is_mapped() || track_paths.len() <= 60 || !search_hub.query().trim().is_empty() {
         fill_tracks();
     }
 
     let list_filter_weak = list.downgrade();
-    search_hub.on_query_changed(move || {
+    search_hub.connect(&list, move || {
         if let Some(l) = list_filter_weak.upgrade() {
             l.invalidate_filter();
         }
@@ -973,24 +1234,36 @@ fn album_library_view(
     navigation.add_named(&outer, Some("browse"));
     let toolbar = gtk::Box::new(Orientation::Horizontal, 16);
     toolbar.set_margin_top(18);
-    let heading = gtk::Label::new(Some("Albums"));
+    let heading = gtk::Label::new(None);
+    i18n::bind_label(&heading, |l| i18n::nav_title(l, "albums"));
     heading.set_xalign(0.0);
     heading.set_hexpand(true);
     heading.add_css_class("page-title");
     toolbar.append(&heading);
 
-    let sort_options = [
-        "Album (A–Z)",
-        "Album (Z–A)",
-        "Artist (A–Z)",
-        "Year (Newest)",
-        "Year (Oldest)",
-    ];
-    let sort_dropdown = gtk::DropDown::from_strings(&sort_options);
+    let sort_dropdown = gtk::DropDown::from_strings(&[]);
+    i18n::bind_dropdown_strings(&sort_dropdown, |l| match l {
+        i18n::Language::En => &[
+            "Album (A–Z)",
+            "Album (Z–A)",
+            "Artist (A–Z)",
+            "Year (Newest)",
+            "Year (Oldest)",
+        ],
+        i18n::Language::PtBr => &[
+            "Álbum (A–Z)",
+            "Álbum (Z–A)",
+            "Artista (A–Z)",
+            "Ano (Mais recentes)",
+            "Ano (Mais antigos)",
+        ],
+    });
     let initial_album_sort = state_mgr.snapshot().album_sort_mode;
     sort_dropdown.set_selected(initial_album_sort as u32);
     sort_dropdown.add_css_class("sort-dropdown");
-    sort_dropdown.set_tooltip_text(Some("Album sort criteria"));
+    i18n::bind_tooltip(&sort_dropdown, |l| {
+        i18n::pick_for(l, "Album sort criteria", "Ordenação dos álbuns")
+    });
     toolbar.append(&sort_dropdown);
 
     let views = gtk::Stack::new();
@@ -1008,7 +1281,14 @@ fn album_library_view(
     let spinner = gtk::Spinner::new();
     spinner.start();
     loading.append(&spinner);
-    let status = gtk::Label::new(Some("Organizando álbuns pelos metadados…"));
+    let status = gtk::Label::new(None);
+    i18n::bind_label(&status, |l| {
+        i18n::pick_for(
+            l,
+            "Organizing albums from metadata…",
+            "Organizando álbuns pelos metadados…",
+        )
+    });
     status.add_css_class("bottom-artist-title");
     loading.append(&status);
     views.add_named(&loading, Some("loading"));
@@ -1033,7 +1313,13 @@ fn album_library_view(
                 ),
                 Err(_) => {
                     spinner.stop();
-                    status.set_text("Could not organize albums.");
+                    i18n::bind_label(&status, |l| {
+                        i18n::pick_for(
+                            l,
+                            "Could not organize albums.",
+                            "Não foi possível organizar os álbuns.",
+                        )
+                    });
                 }
             }
         }
@@ -1061,7 +1347,14 @@ fn populate_album_views(
     };
     let mode_cell = Rc::new(std::cell::Cell::new(initial_mode));
     let (grid_widget, grid) = album_grid(audio, &albums, navigation, &mode_cell, search_hub);
-    views.add_titled(&grid_widget, Some("covers"), "Covers");
+    let covers_page = views.add_titled(
+        &grid_widget,
+        Some("covers"),
+        i18n::pick("Covers", "Capas"),
+    );
+    i18n::connect(&grid_widget, move |l| {
+        covers_page.set_title(i18n::pick_for(l, "Covers", "Capas"));
+    });
 
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::None);
@@ -1075,7 +1368,14 @@ fn populate_album_views(
     let empty_icon = gtk::Image::from_icon_name("media-optical-symbolic");
     empty_icon.set_pixel_size(48);
     empty_icon.add_css_class("album-cover-placeholder");
-    let empty_label = gtk::Label::new(Some("Nenhum álbum corresponde à busca"));
+    let empty_label = gtk::Label::new(None);
+    i18n::bind_label(&empty_label, |l| {
+        i18n::pick_for(
+            l,
+            "No albums match your search",
+            "Nenhum álbum corresponde à busca",
+        )
+    });
     empty_label.add_css_class("bottom-artist-title");
     empty_box.append(&empty_icon);
     empty_box.append(&empty_label);
@@ -1122,24 +1422,39 @@ fn populate_album_views(
                         .year
                         .map(|y| format!(" ({y})"))
                         .unwrap_or_default();
-                    let subtitle = if album_info.artist != "Artista desconhecido" {
+                    let subtitle = if !i18n::is_unknown_artist(&album_info.artist) {
                         format!("{}  ·  {}{}", album_info.artist, album_info.title, year_str)
                     } else {
                         format!("{}{}", album_info.title, year_str)
                     };
                     let label = gtk::Label::new(Some(&format!(
-                        "{}  ·  {} faixa(s)",
+                        "{}  ·  {}",
                         subtitle,
-                        album_info.tracks.len()
+                        i18n::tracks_count_inline(i18n::current(), album_info.tracks.len())
                     )));
                     label.set_xalign(0.0);
                     label.set_hexpand(true);
                     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
                     label.add_css_class("album-title-header");
+                    {
+                        let lbl_weak = label.downgrade();
+                        let track_count = album_info.tracks.len();
+                        let sub_owned = subtitle.clone();
+                        i18n::connect(&label, move |lang| {
+                            if let Some(lbl) = lbl_weak.upgrade() {
+                                lbl.set_text(&format!(
+                                    "{sub_owned}  ·  {}",
+                                    i18n::tracks_count_inline(lang, track_count)
+                                ));
+                            }
+                        });
+                    }
 
                     let tracks = Rc::new(album_info.tracks.clone());
                     let album_queue = tracks.clone();
-                    let button = labeled_icon_button("media-playback-start-symbolic", "Ouvir álbum");
+                    let button = labeled_icon_button_i18n("media-playback-start-symbolic", |l| {
+                        i18n::pick_for(l, "Play album", "Ouvir álbum")
+                    });
                     button.add_css_class("play-album-button");
                     let engine = audio.clone();
                     button.connect_clicked(move |_| {
@@ -1189,13 +1504,16 @@ fn populate_album_views(
 
     let pl_search = populate_list.clone();
     let search_hub_check = search_hub.clone();
-    search_hub.on_query_changed(move || {
+    search_hub.connect(&list, move || {
         if !search_hub_check.query().trim().is_empty() {
             pl_search();
         }
     });
 
-    if views.visible_child_name().as_deref() == Some("list") || albums_rc.len() <= 10 {
+    if views.visible_child_name().as_deref() == Some("list")
+        || albums_rc.len() <= 10
+        || !search_hub.query().trim().is_empty()
+    {
         populate_list();
     }
 
@@ -1214,7 +1532,7 @@ fn populate_album_views(
     });
 
     let list_filter_weak = list.downgrade();
-    search_hub.on_query_changed(move || {
+    search_hub.connect(&list, move || {
         if let Some(l) = list_filter_weak.upgrade() {
             l.invalidate_filter();
         }
@@ -1261,7 +1579,10 @@ fn populate_album_views(
     });
 
     scrolled.set_child(Some(&list));
-    views.add_titled(&scrolled, Some("list"), "List");
+    let list_page = views.add_titled(&scrolled, Some("list"), i18n::pick("List", "Lista"));
+    i18n::connect(&scrolled, move |l| {
+        list_page.set_title(i18n::pick_for(l, "List", "Lista"));
+    });
     views.set_visible_child_name("covers");
     if let Some(loading) = views.child_by_name("loading") {
         views.remove(&loading);
@@ -1308,7 +1629,7 @@ fn album_grid(
     });
 
     let grid_filter_weak = grid.downgrade();
-    search_hub.on_query_changed(move || {
+    search_hub.connect(&grid, move || {
         if let Some(g) = grid_filter_weak.upgrade() {
             g.invalidate_filter();
         }
@@ -1334,7 +1655,7 @@ fn album_grid(
 
     let nav_weak = navigation.downgrade();
     let search_hub_nav = search_hub.clone();
-    search_hub.on_query_changed(move || {
+    search_hub.connect(navigation, move || {
         let q = search_hub_nav.query();
         if !q.trim().is_empty() {
             if let Some(nav) = nav_weak.upgrade() {
@@ -1346,7 +1667,14 @@ fn album_grid(
     });
 
     if albums.is_empty() {
-        let empty = gtk::Label::new(Some("Nenhum álbum encontrado na biblioteca."));
+        let empty = gtk::Label::new(None);
+        i18n::bind_label(&empty, |l| {
+            i18n::pick_for(
+                l,
+                "No albums found in your library.",
+                "Nenhum álbum encontrado na biblioteca.",
+            )
+        });
         empty.add_css_class("bottom-artist-title");
         empty.set_margin_top(40);
         scroll.set_child(Some(&empty));
@@ -1379,10 +1707,10 @@ fn album_grid(
             button.set_overflow(gtk::Overflow::Hidden);
 
             let tooltip = match (album_info.artist.as_str(), album_info.year) {
-                (artist, Some(y)) if artist != "Artista desconhecido" => {
+                (artist, Some(y)) if !i18n::is_unknown_artist(artist) => {
                     format!("{} — {} ({})", artist, album_info.title, y)
                 }
-                (artist, None) if artist != "Artista desconhecido" => {
+                (artist, None) if !i18n::is_unknown_artist(artist) => {
                     format!("{} — {}", artist, album_info.title)
                 }
                 (_, Some(y)) => format!("{} ({})", album_info.title, y),
@@ -1390,7 +1718,8 @@ fn album_grid(
             };
             button.set_tooltip_text(Some(&tooltip));
             button.update_property(&[gtk::accessible::Property::Label(&format!(
-                "Abrir álbum {album}"
+                "{} {album}",
+                i18n::pick("Open album", "Abrir álbum")
             ))]);
             let square = gtk::AspectFrame::new(0.5, 0.5, 1.0, false);
             let overlay = gtk::Overlay::new();
@@ -1517,7 +1846,9 @@ fn album_detail(
     page.set_margin_end(28);
     page.set_margin_top(20);
     page.set_margin_bottom(18);
-    let back = labeled_icon_button("go-previous-symbolic", "Back to albums");
+    let back = labeled_icon_button_i18n("go-previous-symbolic", |l| {
+        i18n::pick_for(l, "Back to albums", "Voltar aos álbuns")
+    });
     back.add_css_class("nav-button");
     back.set_halign(gtk::Align::Start);
     back.set_widget_name("album-back");
@@ -1558,11 +1889,25 @@ fn album_detail(
     title.set_max_width_chars(35);
     title.add_css_class("page-title");
     info.append(&title);
-    let count = gtk::Label::new(Some(&format!("{} tracks · Local album", tracks.len())));
+    let count = gtk::Label::new(Some(&i18n::album_tracks_local(
+        i18n::current(),
+        tracks.len(),
+    )));
     count.set_xalign(0.0);
     count.add_css_class("bottom-artist-title");
+    {
+        let cnt_weak = count.downgrade();
+        let track_len = tracks.len();
+        i18n::connect(&count, move |lang| {
+            if let Some(lbl) = cnt_weak.upgrade() {
+                lbl.set_text(&i18n::album_tracks_local(lang, track_len));
+            }
+        });
+    }
     info.append(&count);
-    let play = labeled_icon_button("media-playback-start-symbolic", "Play album");
+    let play = labeled_icon_button_i18n("media-playback-start-symbolic", |l| {
+        i18n::pick_for(l, "Play album", "Tocar álbum")
+    });
     play.add_css_class("open-button");
     play.set_widget_name("album-play");
     play.set_halign(gtk::Align::Start);
@@ -1673,16 +2018,31 @@ fn queue_actions(
     menu.set_widget_name("queue-actions");
     menu.add_css_class("enqueue-menu");
     if album {
-        menu.set_label("Add to queue");
+        menu.set_label(i18n::pick("Add to queue", "Adicionar à fila"));
+        let menu_weak = menu.downgrade();
+        i18n::connect(&menu, move |l| {
+            if let Some(m) = menu_weak.upgrade() {
+                m.set_label(i18n::pick_for(l, "Add to queue", "Adicionar à fila"));
+            }
+        });
         menu.set_halign(gtk::Align::Start);
+        i18n::bind_tooltip(&menu, |l| {
+            i18n::pick_for(
+                l,
+                "Queue options for this album",
+                "Opções de fila para este álbum",
+            )
+        });
     } else {
         menu.set_icon_name("view-more-symbolic");
+        i18n::bind_tooltip(&menu, |l| {
+            i18n::pick_for(
+                l,
+                "Queue options for this track",
+                "Opções de fila para esta faixa",
+            )
+        });
     }
-    menu.set_tooltip_text(Some(if album {
-        "Queue options for this album"
-    } else {
-        "Queue options for this track"
-    }));
     menu.set_valign(gtk::Align::Center);
     let audio = audio.clone();
     menu.set_create_popup_func(move |menu| {
@@ -1693,9 +2053,18 @@ fn queue_actions(
         error.set_max_width_chars(30);
         error.set_visible(false);
         error.add_css_class("queue-error");
+        let lang = i18n::current();
         for (name, label, next) in [
-            ("enqueue-next", "Play next", true),
-            ("enqueue-last", "Add to end", false),
+            (
+                "enqueue-next",
+                i18n::pick_for(lang, "Play next", "Tocar a seguir"),
+                true,
+            ),
+            (
+                "enqueue-last",
+                i18n::pick_for(lang, "Add to end", "Adicionar ao final"),
+                false,
+            ),
         ] {
             let button = gtk::Button::with_label(label);
             button.set_widget_name(name);
@@ -1709,7 +2078,10 @@ fn queue_actions(
                 Ok(()) => {
                     error.set_visible(false);
                     if let Some(menu) = weak_menu.upgrade() {
-                        menu.set_tooltip_text(Some("Added to queue"));
+                        menu.set_tooltip_text(Some(i18n::pick(
+                            "Added to queue",
+                            "Adicionado à fila",
+                        )));
                     }
                     if let Some(popover) = weak_popover.upgrade() {
                         popover.popdown();
@@ -1730,7 +2102,11 @@ fn queue_actions(
             let sep = gtk::Separator::new(Orientation::Horizontal);
             options.append(&sep);
 
-            let pl_lbl = gtk::Label::new(Some("Add to playlist:"));
+            let pl_lbl = gtk::Label::new(Some(i18n::pick_for(
+                lang,
+                "Add to playlist:",
+                "Adicionar à playlist:",
+            )));
             pl_lbl.set_xalign(0.0);
             pl_lbl.add_css_class("bottom-artist-title");
             options.append(&pl_lbl);
@@ -1765,21 +2141,24 @@ fn queue_actions(
                 pl_btn.connect_clicked(move |_| {
                     match pl_mgr.add_tracks_to_playlist(&pl_path, &tracks) {
                         Ok(()) => {
-                            let msg = if tracks.len() == 1 {
-                                format!("Track added to \"{pl_name}\"!")
-                            } else {
-                                format!("{} tracks added to \"{pl_name}\"!", tracks.len())
-                            };
+                            let cur = i18n::current();
+                            let msg = i18n::playlist_added_notice(cur, tracks.len(), &pl_name);
                             if let Some(m) = weak_m.upgrade() {
                                 m.set_tooltip_text(Some(&msg));
                             }
-                            show_system_notification("Playlist Updated", &msg);
+                            show_system_notification(
+                                i18n::pick_for(cur, "Playlist Updated", "Playlist Atualizada"),
+                                &msg,
+                            );
                             if let Some(p) = weak_pop.upgrade() {
                                 p.popdown();
                             }
                         }
                         Err(e) => {
-                            error_clone.set_text(&format!("Error saving: {e}"));
+                            error_clone.set_text(&format!(
+                                "{}: {e}",
+                                i18n::pick("Error saving", "Erro ao salvar")
+                            ));
                             error_clone.set_visible(true);
                         }
                     }
@@ -1797,11 +2176,12 @@ fn queue_actions(
     menu
 }
 
-fn labeled_icon_button(icon: &str, text: &str) -> gtk::Button {
+fn labeled_icon_button_i18n(icon: &str, text: fn(i18n::Language) -> &'static str) -> gtk::Button {
     let content = gtk::Box::new(Orientation::Horizontal, 10);
     content.append(&gtk::Image::from_icon_name(icon));
-    let label = gtk::Label::new(Some(text));
+    let label = gtk::Label::new(None);
     label.set_xalign(0.0);
+    i18n::bind_label(&label, text);
     content.append(&label);
     let button = gtk::Button::new();
     button.set_child(Some(&content));
@@ -1814,14 +2194,21 @@ fn header(
     stack: &gtk::Stack,
     nav_buttons: &[(gtk::Button, &'static str, &'static str)],
     title_label: &gtk::Label,
-) -> gtk::Widget {
+    catalog: &Rc<library_settings::Catalog>,
+) -> (gtk::Widget, gtk::SearchEntry, gtk::Button) {
     let bar = gtk::Box::new(Orientation::Horizontal, 14);
     bar.add_css_class("topbar");
 
     bar.append(title_label);
 
     let search = gtk::SearchEntry::new();
-    search.set_placeholder_text(Some("Search tracks, artists, or albums..."));
+    i18n::bind_placeholder(&search, |l| {
+        i18n::pick_for(
+            l,
+            "Search tracks, artists, or albums… (Ctrl+F)",
+            "Buscar faixas, artistas ou álbuns… (Ctrl+F)",
+        )
+    });
     search.set_width_chars(28);
     search.add_css_class("search-box");
 
@@ -1836,7 +2223,7 @@ fn header(
             && stack_switch.visible_child_name().as_deref() == Some("overview")
         {
             stack_switch.set_visible_child_name("tracks");
-            title_ref.set_text("Tracks");
+            title_ref.set_text(i18n::nav_title(i18n::current(), "tracks"));
             for (b, page, _) in &nav_buttons_switch {
                 if *page == "tracks" {
                     b.add_css_class("active-nav");
@@ -1852,32 +2239,84 @@ fn header(
     });
 
     let search_audio = audio.clone();
+    let search_catalog = catalog.clone();
     search.connect_activate(move |entry| {
-        let text = entry.text();
-        let _ = search_audio.search_and_load(text.as_str());
+        let query = entry.text().to_string();
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let matches: Vec<std::path::PathBuf> = search_catalog
+            .report
+            .borrow()
+            .tracks
+            .iter()
+            .filter(|p| search::track_matches(p, trimmed))
+            .cloned()
+            .collect();
+        if !matches.is_empty() {
+            let _ = search_audio.play_files(&matches, 0);
+        } else if search_audio.search_and_load(trimmed).is_some() {
+            let _ = search_audio.play();
+        }
     });
     bar.append(&search);
 
-    let open = labeled_icon_button("folder-open-symbolic", "Open track");
+    let open = labeled_icon_button_i18n("folder-open-symbolic", |l| {
+        i18n::pick_for(l, "Open track", "Abrir faixa")
+    });
+    i18n::bind_tooltip(&open, |l| {
+        i18n::pick_for(l, "Open track · Ctrl+O", "Abrir faixa · Ctrl+O")
+    });
     open.add_css_class("open-button");
     let open_audio = audio.clone();
-    open.connect_clicked(move |_| {
+    open.connect_clicked(move |btn| {
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some(i18n::pick(
+            "Supported audio files",
+            "Arquivos de áudio suportados",
+        )));
+        for ext in &[
+            "flac", "mp3", "ogg", "oga", "wav", "m4a", "aac", "opus", "alac", "aif", "aiff", "wma",
+        ] {
+            filter.add_suffix(ext);
+        }
+        let all_filter = gtk::FileFilter::new();
+        all_filter.set_name(Some(i18n::pick("All files", "Todos os arquivos")));
+        all_filter.add_pattern("*");
+
+        let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        filters.append(&all_filter);
+
         let dialog = gtk::FileDialog::builder()
-            .title("Open audio file")
+            .title(i18n::pick("Open audio file", "Abrir arquivo de áudio"))
+            .filters(&filters)
+            .default_filter(&filter)
             .build();
+        let parent = btn.root().and_then(|r| r.downcast::<gtk::Window>().ok());
         let engine = open_audio.clone();
         glib::MainContext::default().spawn_local(async move {
-            if let Ok(file) = dialog.open_future(None::<&gtk::Window>).await {
-                if let Some(path) = file.path() {
-                    if engine.load(path).is_ok() {
-                        let _ = engine.play();
+            if let Ok(files) = dialog.open_multiple_future(parent.as_ref()).await {
+                let mut paths = Vec::new();
+                for i in 0..files.n_items() {
+                    if let Some(file) = files
+                        .item(i)
+                        .and_then(|obj| obj.downcast::<gtk::gio::File>().ok())
+                    {
+                        if let Some(path) = file.path() {
+                            paths.push(path);
+                        }
                     }
+                }
+                if !paths.is_empty() {
+                    let _ = engine.play_files(&paths, 0);
                 }
             }
         });
     });
     bar.append(&open);
-    bar.upcast()
+    (bar.upcast(), search, open)
 }
 
 fn main_stage(
@@ -1914,7 +2353,10 @@ fn main_stage(
     stage.set_margin_bottom(22);
 
     let heading = gtk::Box::new(Orientation::Horizontal, 12);
-    let eyebrow = gtk::Label::new(Some("SESSÃO DE ESCUTA"));
+    let eyebrow = gtk::Label::new(None);
+    i18n::bind_label(&eyebrow, |l| {
+        i18n::pick_for(l, "LISTENING ROOM", "SESSÃO DE ESCUTA")
+    });
     eyebrow.add_css_class("listening-eyebrow");
     eyebrow.set_xalign(0.0);
     eyebrow.set_hexpand(true);
@@ -1923,14 +2365,23 @@ fn main_stage(
     status_box.add_css_class("listening-status");
     let status_icon = gtk::Image::from_icon_name("media-playback-stop-symbolic");
     status_icon.set_pixel_size(12);
-    let status = gtk::Label::new(Some("PRONTO"));
+    let status = gtk::Label::new(Some(i18n::playback_status(
+        i18n::current(),
+        audio.state(),
+    )));
     status_box.append(&status_icon);
     status_box.append(&status);
     heading.append(&status_box);
 
     let rpm_box = gtk::Box::new(Orientation::Horizontal, 0);
     rpm_box.add_css_class("rpm-selector");
-    rpm_box.set_tooltip_text(Some("Rotational speed: 33 ⅓ RPM or 45 RPM"));
+    i18n::bind_tooltip(&rpm_box, |l| {
+        i18n::pick_for(
+            l,
+            "Rotational speed: 33 ⅓ RPM or 45 RPM",
+            "Velocidade de rotação: 33 ⅓ RPM ou 45 RPM",
+        )
+    });
 
     let btn_33 = gtk::ToggleButton::new();
     btn_33.set_label("33 ⅓");
@@ -2073,7 +2524,8 @@ fn main_stage(
     let click_pitch = pitch.clone();
     let click_state_mgr = state_mgr.clone();
     let click_audio = audio.clone();
-    click.connect_released(move |_, _, x, y| {
+    let click_playing = playing.clone();
+    click.connect_released(move |_, n_press, x, y| {
         let Some(deck_widget) = click_deck.upgrade() else {
             return;
         };
@@ -2111,7 +2563,7 @@ fn main_stage(
             return;
         }
 
-        // 3. Clique ou trava no Pitch Fader
+        // 3. Clique, duplo-clique (Quartz Lock 0.0%) ou trava no Pitch Fader
         let px = layout.pitch_x;
         let py = layout.pitch_y;
         let pw = layout.pitch_w;
@@ -2119,7 +2571,7 @@ fn main_stage(
         if x >= px - 6.0 && x <= px + pw + 6.0 && y >= py - 6.0 && y <= py + ph + 6.0 {
             let center_y = py + ph / 2.0;
             let slot_h = ph - 28.0;
-            let new_pitch = if (y - center_y).abs() <= 5.0 || x <= px + 8.0 {
+            let new_pitch = if n_press >= 2 || (y - center_y).abs() <= 5.0 || x <= px + 8.0 {
                 0.0
             } else {
                 let rel = (center_y - y) / (slot_h / 2.0);
@@ -2131,9 +2583,62 @@ fn main_stage(
             click_state_mgr.flush_if_dirty();
             click_audio.set_rate(1.0 + new_pitch);
             deck_widget.queue_draw();
+            return;
+        }
+
+        // 4. Clique no Prato / Disco de Vinil para Play / Pause com Agulha
+        let d_platter = ((x - layout.cx).powi(2) + (y - layout.cy).powi(2)).sqrt();
+        if d_platter <= layout.r_platter {
+            let next_playing = !click_playing.get();
+            if next_playing {
+                let _ = click_audio.play();
+            } else {
+                let _ = click_audio.pause();
+            }
+            click_playing.set(next_playing);
+            deck_widget.queue_draw();
         }
     });
     deck.add_controller(click);
+
+    let motion = gtk::EventControllerMotion::new();
+    let motion_deck = deck.downgrade();
+    motion.connect_motion(move |_, x, y| {
+        let Some(deck_widget) = motion_deck.upgrade() else { return; };
+        let w = deck_widget.width() as f64;
+        let h = deck_widget.height() as f64;
+        let layout = TurntableLayout::compute(w, h);
+
+        let d33 = ((x - layout.led_x).powi(2) + (y - layout.led_y).powi(2)).sqrt();
+        let led45_x = layout.led_x + 50.0;
+        let d45 = ((x - led45_x).powi(2) + (y - layout.led_y).powi(2)).sqrt();
+        let in_rpm = d33 <= 20.0 || d45 <= 20.0;
+
+        let d_tl = ((x - layout.target_light_x).powi(2) + (y - layout.target_light_y).powi(2)).sqrt();
+        let in_tl = d_tl <= layout.target_light_r + 6.0;
+
+        let px = layout.pitch_x;
+        let py = layout.pitch_y;
+        let pw = layout.pitch_w;
+        let ph = layout.pitch_h;
+        let in_pitch = x >= px - 6.0 && x <= px + pw + 6.0 && y >= py - 6.0 && y <= py + ph + 6.0;
+
+        let d_platter = ((x - layout.cx).powi(2) + (y - layout.cy).powi(2)).sqrt();
+        let in_platter = d_platter <= layout.r_platter;
+
+        if in_rpm || in_tl || in_pitch || in_platter {
+            deck_widget.set_cursor_from_name(Some("pointer"));
+        } else {
+            deck_widget.set_cursor_from_name(None);
+        }
+    });
+    let motion_deck_leave = deck.downgrade();
+    motion.connect_leave(move |_| {
+        if let Some(deck_widget) = motion_deck_leave.upgrade() {
+            deck_widget.set_cursor_from_name(None);
+        }
+    });
+    deck.add_controller(motion);
 
     let drag = gtk::GestureDrag::new();
     let drag_pitch = pitch.clone();
@@ -2201,12 +2706,18 @@ fn main_stage(
     information.add_css_class("listening-information");
     let description = gtk::Box::new(Orientation::Vertical, 7);
     description.set_hexpand(true);
-    let title = gtk::Label::new(Some("Escolha sua próxima faixa"));
+    let title = gtk::Label::new(Some(i18n::pick(
+        "Choose your next track",
+        "Escolha sua próxima faixa",
+    )));
     title.set_xalign(0.0);
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
     title.set_max_width_chars(38);
     title.add_css_class("listening-title");
-    let artist = gtk::Label::new(Some("Abra um álbum ou arraste um arquivo de áudio"));
+    let artist = gtk::Label::new(Some(i18n::pick(
+        "Open an album or drag and drop an audio file",
+        "Abra um álbum ou arraste um arquivo de áudio",
+    )));
     artist.set_xalign(0.0);
     artist.set_ellipsize(gtk::pango::EllipsizeMode::End);
     artist.set_max_width_chars(55);
@@ -2214,7 +2725,7 @@ fn main_stage(
     description.append(&title);
     description.append(&artist);
     information.append(&description);
-    let format = gtk::Label::new(Some("ÁUDIO LOCAL"));
+    let format = gtk::Label::new(Some(i18n::pick("LOCAL AUDIO", "ÁUDIO LOCAL")));
     format.add_css_class("listening-format");
     format.set_valign(gtk::Align::Center);
     format.set_halign(gtk::Align::End);
@@ -2232,15 +2743,28 @@ fn main_stage(
     let tick_vu = vu_needles.clone();
     let tick_needle_drop = needle_drop.clone();
     let tick_tl = target_light.clone();
+    let tick_notifications = Rc::new(Cell::new(initial_state.notifications));
     let tick_state_mgr = state_mgr.clone();
     let last_state_rev = Cell::new(state_mgr.revision());
     let tick_pitch = pitch.clone();
     let last_pitch = Rc::new(Cell::new(initial_pitch));
-    let tick_last_notif = Rc::new(RefCell::new(String::new()));
+    let last_notif_seq = Cell::new(0_u64);
+    let pending_notif: RefCell<Option<(u64, std::time::Instant)>> = RefCell::new(None);
     let last_rpm = Rc::new(Cell::new(initial_rpm));
 
     let last_frame_time = Rc::new(Cell::new(0_i64));
     let last_meta_ver = Rc::new(Cell::new(0_u64));
+    {
+        let lmv_i18n = last_meta_ver.clone();
+        let status_weak = status.downgrade();
+        let audio_i18n = audio.clone();
+        i18n::connect(&deck, move |lang| {
+            lmv_i18n.set(0);
+            if let Some(st) = status_weak.upgrade() {
+                st.set_text(i18n::playback_status(lang, audio_i18n.state()));
+            }
+        });
+    }
     let last_metadata_poll = Rc::new(Cell::new(0_i64));
     let last_position_poll = Cell::new(0_i64);
     let target_arm = Cell::new(1.80_f64);
@@ -2264,6 +2788,7 @@ fn main_stage(
         if cur_state_rev != last_state_rev.replace(cur_state_rev) {
             let snap = tick_state_mgr.snapshot();
             tick_needle_drop.set(snap.needle_drop);
+            tick_notifications.set(snap.notifications);
             if tick_tl.replace(snap.target_light) != snap.target_light {
                 settings_changed_draw = true;
             }
@@ -2272,11 +2797,7 @@ fn main_stage(
         let state = tick_audio.state();
         let is_playing = state == PlaybackState::Playing;
         if state != last_state.replace(state) {
-            status.set_text(match state {
-                PlaybackState::Playing => "EM REPRODUÇÃO",
-                PlaybackState::Paused => "PAUSADO",
-                PlaybackState::Stopped => "PRONTO",
-            });
+            status.set_text(i18n::playback_status(i18n::current(), state));
             status_icon.set_icon_name(Some(match state {
                 PlaybackState::Playing => "media-playback-start-symbolic",
                 PlaybackState::Paused => "media-playback-pause-symbolic",
@@ -2287,23 +2808,11 @@ fn main_stage(
                     needle_drop::play_needle_drop();
                 }
                 status_box.add_css_class("is-playing");
-                let m = tick_audio.metadata();
-                if !m.uri.is_empty() {
-                    let mut last_notif = tick_last_notif.borrow_mut();
-                    if *last_notif != m.uri {
-                        *last_notif = m.uri.clone();
-                        show_track_notification(
-                            &m.title,
-                            &m.artist,
-                            &m.album,
-                            m.cover_path.as_deref(),
-                        );
-                    }
-                }
             } else {
                 status_box.remove_css_class("is-playing");
+                *pending_notif.borrow_mut() = None;
                 if state == PlaybackState::Stopped {
-                    tick_last_notif.borrow_mut().clear();
+                    last_notif_seq.set(0);
                 }
             }
         }
@@ -2314,6 +2823,40 @@ fn main_stage(
             last_metadata_poll.get() == 0 || frame_time - last_metadata_poll.get() >= 250_000;
         if should_poll_metadata {
             last_metadata_poll.set(frame_time);
+            let audio_pitch = (tick_audio.rate() - 1.0).clamp(-0.08, 0.08);
+            if (audio_pitch - tick_pitch.get()).abs() > 0.001 {
+                tick_pitch.set(audio_pitch);
+                tick_state_mgr.update_pitch(audio_pitch);
+                settings_changed_draw = true;
+            }
+        }
+        if is_playing {
+            let cur_seq = tick_audio.track_sequence();
+            if cur_seq != 0 && cur_seq != last_notif_seq.get() {
+                let mut pending = pending_notif.borrow_mut();
+                if pending.as_ref().is_none_or(|(s, _)| *s != cur_seq) {
+                    *pending = Some((cur_seq, std::time::Instant::now()));
+                }
+                if let Some((seq, started_at)) = *pending {
+                    let m = tick_audio.metadata();
+                    if m.uri.is_empty() {
+                        *pending = None;
+                    } else if (!m.artist.is_empty() && !m.title.is_empty())
+                        || started_at.elapsed() >= std::time::Duration::from_millis(450)
+                    {
+                        last_notif_seq.set(seq);
+                        *pending = None;
+                        if tick_notifications.get() {
+                            show_track_notification(
+                                &m.title,
+                                &m.artist,
+                                &m.album,
+                                m.cover_path.as_deref(),
+                            );
+                        }
+                    }
+                }
+            }
         }
         let current_ver = if should_poll_metadata {
             tick_audio.metadata_version()
@@ -2324,7 +2867,7 @@ fn main_stage(
             last_meta_ver.set(current_ver);
             let m = tick_audio.metadata();
             title.set_text(if m.title.is_empty() {
-                "Choose your next track"
+                i18n::pick("Choose your next track", "Escolha sua próxima faixa")
             } else {
                 &m.title
             });
@@ -2340,7 +2883,10 @@ fn main_stage(
                 .collect::<Vec<_>>()
                 .join(" · ");
             artist.set_text(if detail.is_empty() {
-                "Local audio file"
+                i18n::pick(
+                    "Open an album or drag and drop an audio file",
+                    "Abra um álbum ou arraste um arquivo de áudio",
+                )
             } else {
                 &detail
             });
@@ -2366,7 +2912,7 @@ fn main_stage(
             }
             let technical_text = technical.join(" · ");
             format.set_text(if technical.is_empty() {
-                "ÁUDIO LOCAL"
+                i18n::pick("LOCAL AUDIO", "ÁUDIO LOCAL")
             } else {
                 &technical_text
             });
@@ -2447,13 +2993,6 @@ fn main_stage(
                 }
             } else {
                 drop(state);
-            }
-            if is_playing && !m.uri.is_empty() {
-                let mut last_notif = tick_last_notif.borrow_mut();
-                if *last_notif != m.uri {
-                    *last_notif = m.uri.clone();
-                    show_track_notification(&m.title, &m.artist, &m.album, m.cover_path.as_deref());
-                }
             }
             deck_widget.queue_draw();
         }
@@ -2557,38 +3096,60 @@ fn main_stage(
 }
 
 fn update_shuffle_btn(btn: &gtk::Button, active: bool) {
+    let lang = i18n::current();
     if active {
         btn.add_css_class("active");
-        btn.set_tooltip_text(Some("Shuffle · Enabled"));
     } else {
         btn.remove_css_class("active");
-        btn.set_tooltip_text(Some("Shuffle · Disabled"));
     }
+    btn.set_tooltip_text(Some(i18n::shuffle_tooltip(lang, active)));
 }
 
 fn update_repeat_btn(btn: &gtk::Button, mode: RepeatMode) {
+    let lang = i18n::current();
     match mode {
         RepeatMode::Off => {
             btn.remove_css_class("active");
             btn.set_icon_name("media-playlist-repeat-symbolic");
-            btn.set_tooltip_text(Some(
-                "Repeat · Off (click to repeat entire queue)",
-            ));
         }
         RepeatMode::All => {
             btn.add_css_class("active");
             btn.set_icon_name("media-playlist-repeat-symbolic");
-            btn.set_tooltip_text(Some(
-                "Repeat · All (click to repeat current track)",
-            ));
         }
         RepeatMode::Track => {
             btn.add_css_class("active");
             btn.set_icon_name("media-playlist-repeat-song-symbolic");
-            btn.set_tooltip_text(Some(
-                "Repeat · Track (click to turn off)",
-            ));
         }
+    }
+    btn.set_tooltip_text(Some(i18n::repeat_tooltip(lang, mode)));
+}
+
+fn update_volume_icon(btn: &gtk::Button, icon: &gtk::Image, vol: f64, lang: i18n::Language) {
+    let name = if vol <= 0.001 {
+        "audio-volume-muted-symbolic"
+    } else if vol < 0.34 {
+        "audio-volume-low-symbolic"
+    } else if vol < 0.67 {
+        "audio-volume-medium-symbolic"
+    } else {
+        "audio-volume-high-symbolic"
+    };
+    icon.set_icon_name(Some(name));
+    if vol <= 0.001 {
+        btn.add_css_class("active");
+    } else {
+        btn.remove_css_class("active");
+    }
+    btn.set_tooltip_text(Some(&i18n::mute_tooltip(lang, vol)));
+}
+
+fn next_mute_toggle(cur_vol: f64, pre_mute: &Cell<f64>) -> f64 {
+    if cur_vol > 0.005 {
+        pre_mute.set(cur_vol);
+        0.0
+    } else {
+        let restore = pre_mute.get();
+        if restore > 0.01 { restore } else { 0.75 }
     }
 }
 
@@ -2599,7 +3160,7 @@ fn player_bar(
     queue: &queue_view::QueuePanel,
     errors: &playback_error::ErrorPresenter,
     volume_hud: &Rc<RefCell<VolumeHudState>>,
-) -> gtk::Widget {
+) -> (gtk::Widget, gtk::Button, gtk::Button, gtk::Button) {
     let bar = gtk::Box::new(Orientation::Horizontal, 20);
     bar.add_css_class("player-bar");
 
@@ -2650,7 +3211,10 @@ fn player_bar(
 
     let text_group = gtk::Box::new(Orientation::Vertical, 2);
     text_group.set_valign(gtk::Align::Center);
-    let title_lbl = gtk::Label::new(Some("No track loaded"));
+    let title_lbl = gtk::Label::new(Some(i18n::pick(
+        "No track loaded",
+        "Nenhuma faixa carregada",
+    )));
     title_lbl.add_css_class("bottom-track-title");
     title_lbl.set_xalign(0.0);
     title_lbl.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -2683,13 +3247,19 @@ fn player_bar(
     shuffle_btn.add_css_class("shuffle-button");
 
     let prev = gtk::Button::from_icon_name("media-skip-backward-symbolic");
-    prev.set_tooltip_text(Some("Previous track · ←"));
+    i18n::bind_tooltip(&prev, |l| {
+        i18n::pick_for(l, "Previous track · ←", "Faixa anterior · ←")
+    });
     prev.add_css_class("control-button");
     let toggle = gtk::Button::from_icon_name("media-playback-start-symbolic");
-    toggle.set_tooltip_text(Some("Play / pause · Space"));
+    i18n::bind_tooltip(&toggle, |l| {
+        i18n::pick_for(l, "Play / pause · Space", "Reproduzir / pausar · Espaço")
+    });
     toggle.add_css_class("play-button");
     let next = gtk::Button::from_icon_name("media-skip-forward-symbolic");
-    next.set_tooltip_text(Some("Next track · →"));
+    i18n::bind_tooltip(&next, |l| {
+        i18n::pick_for(l, "Next track · →", "Próxima faixa · →")
+    });
     next.add_css_class("control-button");
 
     let repeat_btn = gtk::Button::from_icon_name("media-playlist-repeat-symbolic");
@@ -2766,9 +3336,51 @@ fn player_bar(
     let total = gtk::Label::new(Some("00:00"));
     total.add_css_class("time-label");
 
+    let is_seeking = Rc::new(Cell::new(false));
+
+    let drag = gtk::GestureDrag::new();
+    drag.set_propagation_phase(gtk::PropagationPhase::Capture);
+    {
+        let is_seeking_begin = is_seeking.clone();
+        drag.connect_drag_begin(move |_, _, _| {
+            is_seeking_begin.set(true);
+        });
+    }
+    {
+        let is_seeking_end = is_seeking.clone();
+        let seek_audio = audio.clone();
+        let seek_scale = seek.downgrade();
+        drag.connect_drag_end(move |_, _, _| {
+            if let Some(scale) = seek_scale.upgrade() {
+                let upper = scale.adjustment().upper().max(0.0);
+                let val = scale.value().clamp(0.0, upper);
+                let _ = seek_audio.seek_us(val as i64);
+            }
+            is_seeking_end.set(false);
+        });
+    }
+    seek.add_controller(drag);
+
+    {
+        let is_seeking_update = is_seeking.clone();
+        let seek_elapsed = elapsed.downgrade();
+        seek.connect_value_changed(move |scale| {
+            if is_seeking_update.get() {
+                if let Some(lbl) = seek_elapsed.upgrade() {
+                    lbl.set_text(&format_time(scale.value() as i64));
+                }
+            }
+        });
+    }
+
     let seek_audio = audio.clone();
-    seek.connect_change_value(move |_, _, value| {
-        let _ = seek_audio.seek_us(value as i64);
+    let change_is_seeking = is_seeking.clone();
+    seek.connect_change_value(move |scale, _, value| {
+        let upper = scale.adjustment().upper().max(0.0);
+        let clamped = value.clamp(0.0, upper);
+        if !change_is_seeking.get() {
+            let _ = seek_audio.seek_us(clamped as i64);
+        }
         glib::Propagation::Proceed
     });
 
@@ -2779,32 +3391,71 @@ fn player_bar(
 
     bar.append(&center_group);
 
-    // Lado Direito: Controle de Volume, Badge de Qualidade e Saída
+    // Lado Direito: Controle de Volume, Mudo (M), Badge de Qualidade e Saída
     let right_group = gtk::Box::new(Orientation::Horizontal, 10);
     right_group.set_width_request(210);
     right_group.set_halign(gtk::Align::End);
     right_group.set_valign(gtk::Align::Center);
 
+    let mute_btn = gtk::Button::new();
+    mute_btn.set_widget_name("mute-button");
+    mute_btn.add_css_class("control-button");
+    mute_btn.add_css_class("mute-button");
     let vol_icon = gtk::Image::from_icon_name("audio-volume-high-symbolic");
     vol_icon.add_css_class("vol-icon");
+    mute_btn.set_child(Some(&vol_icon));
 
     let vol = gtk::Scale::with_range(Orientation::Horizontal, 0.0, 1.0, 0.01);
     let initial_vol = state_mgr.snapshot().volume;
+    let pre_mute_vol = Rc::new(Cell::new(if initial_vol > 0.01 { initial_vol } else { 0.75 }));
     vol.set_value(initial_vol);
     vol.set_width_request(100);
     vol.set_draw_value(false);
-    vol.set_tooltip_text(Some("Volume"));
+    i18n::bind_tooltip(&vol, |l| i18n::pick_for(l, "Volume", "Volume"));
     vol.add_css_class("volume-scale");
+    update_volume_icon(&mute_btn, &vol_icon, initial_vol, i18n::current());
 
     let engine_vol = audio.clone();
     let state_vol = state_mgr.clone();
     let hud_vol = volume_hud.clone();
+    let pre_mute_scale = pre_mute_vol.clone();
+    let mute_scale_btn = mute_btn.downgrade();
+    let vol_icon_scale = vol_icon.downgrade();
     vol.connect_value_changed(move |s| {
         let val = s.value();
+        if val > 0.01 {
+            pre_mute_scale.set(val);
+        }
         engine_vol.set_volume(val);
         state_vol.update_volume(val);
         hud_vol.borrow_mut().trigger(val);
+        if let (Some(btn), Some(icon)) = (mute_scale_btn.upgrade(), vol_icon_scale.upgrade()) {
+            update_volume_icon(&btn, &icon, val, i18n::current());
+        }
     });
+
+    {
+        let mute_audio = audio.clone();
+        let mute_state = state_mgr.clone();
+        let mute_hud = volume_hud.clone();
+        let mute_pre = pre_mute_vol.clone();
+        let mute_scale = vol.downgrade();
+        let mute_icon = vol_icon.downgrade();
+        mute_btn.connect_clicked(move |btn| {
+            let next = next_mute_toggle(mute_audio.volume(), &mute_pre);
+            mute_audio.set_volume(next);
+            mute_state.update_volume(next);
+            mute_hud.borrow_mut().trigger(next);
+            if let Some(icon) = mute_icon.upgrade() {
+                update_volume_icon(btn, &icon, next, i18n::current());
+            }
+            if let Some(scale) = mute_scale.upgrade() {
+                if (scale.value() - next).abs() > 0.001 {
+                    scale.set_value(next);
+                }
+            }
+        });
+    }
 
     let quality_badge = gtk::Label::new(None);
     quality_badge.add_css_class("quality-badge");
@@ -2813,7 +3464,32 @@ fn player_bar(
     let output_badge = gtk::Label::new(Some("LOCAL"));
     output_badge.add_css_class("output-chip");
 
-    right_group.append(&vol_icon);
+    let vol_scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    let vol_scroll_audio = audio.clone();
+    let vol_scroll_state = state_mgr.clone();
+    let vol_scroll_hud = volume_hud.clone();
+    let vol_scroll_scale = vol.downgrade();
+    vol_scroll.connect_scroll(move |_, _dx, dy| {
+        let step = if dy.abs() > 0.01 {
+            (-dy.signum() * 0.03).clamp(-0.10, 0.10)
+        } else {
+            0.0
+        };
+        if step.abs() > 0.0001 {
+            let cur = vol_scroll_audio.volume();
+            let new_vol = (cur + step).clamp(0.0, 1.0);
+            vol_scroll_audio.set_volume(new_vol);
+            vol_scroll_state.update_volume(new_vol);
+            vol_scroll_hud.borrow_mut().trigger(new_vol);
+            if let Some(s) = vol_scroll_scale.upgrade() {
+                s.set_value(new_vol);
+            }
+        }
+        glib::Propagation::Stop
+    });
+    right_group.add_controller(vol_scroll);
+
+    right_group.append(&mute_btn);
     right_group.append(&vol);
     right_group.append(&quality_badge);
     right_group.append(&output_badge);
@@ -2821,10 +3497,13 @@ fn player_bar(
 
     // Atualização em tempo real da barra de transporte
     let tick_seek = seek.clone();
+    let tick_is_seeking = is_seeking.clone();
     let tick_elapsed = elapsed.clone();
     let tick_total = total.clone();
     let tick_audio = audio.clone();
     let tick_vol = vol.clone();
+    let tick_mute_btn = mute_btn.clone();
+    let tick_vol_icon = vol_icon.clone();
     let tick_title = title_lbl.clone();
     let tick_artist = artist_lbl.clone();
     let tick_cover_stack = cover_stack.clone();
@@ -2838,7 +3517,27 @@ fn player_bar(
     let tick_repeat_btn = repeat_btn.clone();
     let last_shuffle = Cell::new(audio.shuffle());
     let last_repeat = Cell::new(audio.repeat_mode());
-    let last_bar_ver = Cell::new(0_u64);
+    let last_bar_ver = Rc::new(Cell::new(0_u64));
+    {
+        let lbv_i18n = last_bar_ver.clone();
+        let sh_weak = shuffle_btn.downgrade();
+        let rp_weak = repeat_btn.downgrade();
+        let mb_weak = mute_btn.downgrade();
+        let vi_weak = vol_icon.downgrade();
+        let a_i18n = audio.clone();
+        i18n::connect(&bar, move |lang| {
+            lbv_i18n.set(0);
+            if let Some(sh) = sh_weak.upgrade() {
+                update_shuffle_btn(&sh, a_i18n.shuffle());
+            }
+            if let Some(rp) = rp_weak.upgrade() {
+                update_repeat_btn(&rp, a_i18n.repeat_mode());
+            }
+            if let (Some(mb), Some(vi)) = (mb_weak.upgrade(), vi_weak.upgrade()) {
+                update_volume_icon(&mb, &vi, a_i18n.volume(), lang);
+            }
+        });
+    }
     let last_queue = Cell::new(None::<(u64, Option<usize>)>);
     let queue = queue.clone();
     let weak_bar = bar.downgrade();
@@ -2893,6 +3592,7 @@ fn player_bar(
         let cur_vol = tick_audio.volume();
         if (cur_vol - tick_vol.value()).abs() >= 0.015 {
             tick_vol.set_value(cur_vol);
+            update_volume_icon(&tick_mute_btn, &tick_vol_icon, cur_vol, i18n::current());
         }
         let is_playing = state == PlaybackState::Playing;
         tick_playing.set(is_playing);
@@ -2911,11 +3611,14 @@ fn player_bar(
                 let art = if !m.artist.is_empty() {
                     m.artist
                 } else {
-                    "Álbum Local".to_string()
+                    i18n::pick("Local Album", "Álbum Local").to_string()
                 };
                 tick_artist.set_text(&art);
             } else {
-                tick_title.set_text("Nenhuma faixa carregada");
+                tick_title.set_text(i18n::pick(
+                    "No track loaded",
+                    "Nenhuma faixa carregada",
+                ));
                 tick_artist.set_text("VinylPlayer");
             }
 
@@ -3050,13 +3753,19 @@ fn player_bar(
         if d > 0 {
             tick_seek.set_sensitive(true);
             tick_seek.set_range(0.0, d as f64);
-            tick_seek.set_value(p as f64);
+            if !tick_is_seeking.get() {
+                tick_seek.set_value(p as f64);
+            }
         } else {
             tick_seek.set_sensitive(false);
             tick_seek.set_range(0.0, 1.0);
-            tick_seek.set_value(0.0);
+            if !tick_is_seeking.get() {
+                tick_seek.set_value(0.0);
+            }
         }
-        tick_elapsed.set_text(&format_time(p));
+        if !tick_is_seeking.get() {
+            tick_elapsed.set_text(&format_time(p));
+        }
         tick_total.set_text(&format_time(d));
 
         // Integração Last.fm: updateNowPlaying e Scrobble automático com tempo real ouvido
@@ -3195,7 +3904,7 @@ fn player_bar(
         glib::ControlFlow::Continue
     });
 
-    bar.upcast()
+    (bar.upcast(), mute_btn, shuffle_btn, repeat_btn)
 }
 
 fn format_time(us: i64) -> String {
@@ -3204,8 +3913,25 @@ fn format_time(us: i64) -> String {
 }
 
 fn install_css() {
-    let css = gtk::CssProvider::new();
-    css.load_from_data(r#"
+    BASE_CSS_PROVIDER.with(|cell| {
+        if cell.borrow().is_some() {
+            return;
+        }
+        let Some(display) = gdk::Display::default() else {
+            return;
+        };
+        let css = gtk::CssProvider::new();
+        css.load_from_data(BASE_CSS);
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &css,
+            gtk::STYLE_PROVIDER_PRIORITY_USER + 1,
+        );
+        *cell.borrow_mut() = Some(css);
+    });
+}
+
+const BASE_CSS: &str = r#"
         * { color: #e7e5df; font-family: 'Inter', 'Cantarell', sans-serif; }
         .app-shell { background: #141516; }
         .enqueue-menu > button { background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 8px; }
@@ -3522,13 +4248,25 @@ fn install_css() {
         .popover-playlist-item:hover {
             background: #2d2922; border-color: #55442e; color: #dfc08d;
         }
-    "#);
+        .mute-button {
+            min-width: 30px; min-height: 30px; padding: 4px 6px;
+        }
+    "#;
 
-    gtk::style_context_add_provider_for_display(
-        &gdk::Display::default().unwrap(),
-        &css,
-        gtk::STYLE_PROVIDER_PRIORITY_USER + 1,
-    );
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mute_toggle_remembers_and_restores_previous_volume() {
+        let pre_mute = Cell::new(0.8);
+        assert_eq!(next_mute_toggle(0.62, &pre_mute), 0.0);
+        assert!((pre_mute.get() - 0.62).abs() < 1e-6);
+        assert!((next_mute_toggle(0.0, &pre_mute) - 0.62).abs() < 1e-6);
+
+        let fallback_pre = Cell::new(0.0);
+        assert!((next_mute_toggle(0.0, &fallback_pre) - 0.75).abs() < 1e-6);
+    }
 }
 
 #[cfg(test)]

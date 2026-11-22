@@ -4,6 +4,8 @@ use crate::now_playing;
 use crate::playlist::{Playlist, PlaylistManager};
 use gtk::prelude::*;
 use gtk::{glib, Orientation};
+use libadwaita as adw;
+use adw::prelude::MessageDialogExt;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -60,18 +62,44 @@ fn playlist_browse_view(
     // Botão Nova Playlist
     let new_btn = gtk::Button::builder()
         .icon_name("list-add-symbolic")
-        .label("New Playlist")
-        .tooltip_text("Create a new M3U8 playlist")
+        .label(crate::i18n::pick("New Playlist", "Nova Playlist"))
+        .tooltip_text(crate::i18n::pick(
+            "Create a new M3U8 playlist",
+            "Criar nova playlist M3U8",
+        ))
         .build();
     new_btn.add_css_class("open-button");
+    crate::i18n::bind_button_label(&new_btn, |l| {
+        crate::i18n::pick_for(l, "New Playlist", "Nova Playlist")
+    });
+    crate::i18n::bind_tooltip(&new_btn, |l| {
+        crate::i18n::pick_for(
+            l,
+            "Create a new M3U8 playlist",
+            "Criar nova playlist M3U8",
+        )
+    });
 
     // Botão Importar M3U
     let import_btn = gtk::Button::builder()
         .icon_name("document-open-symbolic")
-        .label("Import M3U")
-        .tooltip_text("Import external .m3u or .m3u8 file")
+        .label(crate::i18n::pick("Import M3U", "Importar M3U"))
+        .tooltip_text(crate::i18n::pick(
+            "Import external .m3u or .m3u8 file",
+            "Importar arquivo .m3u ou .m3u8",
+        ))
         .build();
     import_btn.add_css_class("folder-button");
+    crate::i18n::bind_button_label(&import_btn, |l| {
+        crate::i18n::pick_for(l, "Import M3U", "Importar M3U")
+    });
+    crate::i18n::bind_tooltip(&import_btn, |l| {
+        crate::i18n::pick_for(
+            l,
+            "Import external .m3u or .m3u8 file",
+            "Importar arquivo .m3u ou .m3u8",
+        )
+    });
 
     toolbar.append(&import_btn);
     toolbar.append(&new_btn);
@@ -113,12 +141,16 @@ fn playlist_browse_view(
                 icon.set_pixel_size(64);
                 icon.add_css_class("album-cover-placeholder");
 
-                let lbl = gtk::Label::new(Some("No playlists created yet."));
+                let lbl = gtk::Label::new(Some(crate::i18n::pick(
+                    "No playlists created yet.",
+                    "Nenhuma playlist criada ainda.",
+                )));
                 lbl.add_css_class("bottom-track-title");
 
-                let sub = gtk::Label::new(Some(
+                let sub = gtk::Label::new(Some(crate::i18n::pick(
                     "Click 'New Playlist' above to create your first analog selection.",
-                ));
+                    "Clique em 'Nova Playlist' acima para criar sua primeira seleção analógica.",
+                )));
                 sub.add_css_class("bottom-artist-title");
 
                 empty_box.append(&icon);
@@ -174,15 +206,22 @@ fn playlist_browse_view(
             pop_box.set_margin_start(10);
             pop_box.set_margin_end(10);
 
-            let title = gtk::Label::new(Some("Playlist Name"));
+            let title = gtk::Label::new(Some(crate::i18n::pick(
+                "Playlist Name",
+                "Nome da Playlist",
+            )));
             title.add_css_class("system-audio-title");
             title.set_xalign(0.0);
 
             let entry = gtk::Entry::new();
-            entry.set_placeholder_text(Some("e.g. Vinyl Classics"));
+            entry.set_placeholder_text(Some(crate::i18n::pick(
+                "e.g. Vinyl Classics",
+                "ex.: Clássicos em Vinil",
+            )));
             entry.set_width_chars(24);
 
-            let create_btn = gtk::Button::with_label("Create");
+            let create_btn =
+                gtk::Button::with_label(crate::i18n::pick("Create", "Criar"));
             create_btn.add_css_class("open-button");
 
             pop_box.append(&title);
@@ -200,11 +239,14 @@ fn playlist_browse_view(
                 let text = entry_clone.text();
                 let trimmed = text.trim();
                 if !trimmed.is_empty() {
-                    if let Ok(_created) = mgr.create_playlist(trimmed) {
-                        reload();
-                        if let Some(pop) = pop_weak.upgrade() {
-                            pop.popdown();
+                    match mgr.create_playlist(trimmed) {
+                        Ok(_created) => {
+                            reload();
+                            if let Some(pop) = pop_weak.upgrade() {
+                                pop.popdown();
+                            }
                         }
+                        Err(e) => eprintln!("Error creating playlist: {e}"),
                     }
                 }
             });
@@ -226,25 +268,29 @@ fn playlist_browse_view(
     {
         let reload = reload_cards.clone();
         let mgr = mgr_rc.clone();
-        import_btn.connect_clicked(move |_| {
+        import_btn.connect_clicked(move |btn| {
             let filter = gtk::FileFilter::new();
-            filter.set_name(Some("M3U Playlists (*.m3u, *.m3u8)"));
+            filter.set_name(Some(crate::i18n::pick(
+                "M3U Playlists (*.m3u, *.m3u8)",
+                "Playlists M3U (*.m3u, *.m3u8)",
+            )));
             filter.add_pattern("*.m3u");
             filter.add_pattern("*.m3u8");
             filter.add_pattern("*.M3U");
             filter.add_pattern("*.M3U8");
 
             let dialog = gtk::FileDialog::builder()
-                .title("Import Playlist")
+                .title(crate::i18n::pick("Import Playlist", "Importar Playlist"))
                 .build();
             let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
             filters.append(&filter);
             dialog.set_filters(Some(&filters));
 
+            let parent = btn.root().and_then(|r| r.downcast::<gtk::Window>().ok());
             let mgr = mgr.clone();
             let reload = reload.clone();
             glib::MainContext::default().spawn_local(async move {
-                if let Ok(file) = dialog.open_future(None::<&gtk::Window>).await {
+                if let Ok(file) = dialog.open_future(parent.as_ref()).await {
                     if let Some(path) = file.path() {
                         if mgr.import_playlist(&path).is_ok() {
                             reload();
@@ -255,7 +301,12 @@ fn playlist_browse_view(
         });
     }
 
-    reload_cards();
+    {
+        let reload_i18n = reload_cards.clone();
+        crate::i18n::connect(&outer, move |_| {
+            reload_i18n();
+        });
+    }
     outer.upcast()
 }
 
@@ -293,7 +344,7 @@ fn playlist_card(
     title_lbl.set_xalign(0.0);
     title_lbl.set_ellipsize(gtk::pango::EllipsizeMode::End);
 
-    let count_str = format!("{} track(s)", playlist.tracks.len());
+    let count_str = crate::i18n::playlist_tracks_count(crate::i18n::current(), playlist.tracks.len());
     let count_lbl = gtk::Label::new(Some(&count_str));
     count_lbl.add_css_class("playlist-card-count");
     count_lbl.set_xalign(0.0);
@@ -309,17 +360,23 @@ fn playlist_card(
     let btn_row = gtk::Box::new(Orientation::Horizontal, 8);
     btn_row.set_margin_top(6);
 
-    let open_btn = gtk::Button::with_label("Open");
+    let open_btn = gtk::Button::with_label(crate::i18n::pick("Open", "Abrir"));
     open_btn.add_css_class("folder-button");
     open_btn.set_hexpand(true);
 
     let play_btn = gtk::Button::from_icon_name("media-playback-start-symbolic");
     play_btn.add_css_class("open-button");
-    play_btn.set_tooltip_text(Some("Play Playlist"));
+    play_btn.set_tooltip_text(Some(crate::i18n::pick(
+        "Play Playlist",
+        "Tocar Playlist",
+    )));
 
     let del_btn = gtk::Button::from_icon_name("user-trash-symbolic");
     del_btn.add_css_class("playlist-del-btn");
-    del_btn.set_tooltip_text(Some("Delete Playlist"));
+    del_btn.set_tooltip_text(Some(crate::i18n::pick(
+        "Delete Playlist",
+        "Excluir Playlist",
+    )));
 
     btn_row.append(&open_btn);
     btn_row.append(&play_btn);
@@ -363,15 +420,48 @@ fn playlist_card(
         });
     }
 
-    // Ação Excluir Playlist
+    // Ação Excluir Playlist com Diálogo de Confirmação
     {
         let mgr = manager.clone();
         let file_path = playlist.file_path.clone();
+        let pl_name = playlist.name.clone();
         let reload = reload_cards.clone();
-        del_btn.connect_clicked(move |_| {
-            if mgr.delete_playlist(&file_path).is_ok() {
-                reload();
+        del_btn.connect_clicked(move |btn| {
+            let parent = btn.root().and_then(|r| r.downcast::<gtk::Window>().ok());
+            let lang = crate::i18n::current();
+            let heading = crate::i18n::pick_for(lang, "Delete Playlist?", "Excluir Playlist?");
+            let body = match lang {
+                crate::i18n::Language::En => format!(
+                    "Are you sure you want to delete \"{}\"? This action cannot be undone.",
+                    pl_name
+                ),
+                crate::i18n::Language::PtBr => format!(
+                    "Tem certeza que deseja excluir \"{}\"? Esta ação não pode ser desfeita.",
+                    pl_name
+                ),
+            };
+            let dialog = adw::MessageDialog::builder()
+                .heading(heading)
+                .body(&body)
+                .build();
+            if let Some(ref p) = parent {
+                dialog.set_transient_for(Some(p));
             }
+            dialog.add_response("cancel", crate::i18n::pick_for(lang, "Cancel", "Cancelar"));
+            dialog.add_response("delete", crate::i18n::pick_for(lang, "Delete", "Excluir"));
+            dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+            dialog.set_default_response(Some("cancel"));
+            dialog.set_close_response("cancel");
+
+            let mgr = mgr.clone();
+            let file_path = file_path.clone();
+            let reload = reload.clone();
+            dialog.connect_response(None, move |_, response| {
+                if response == "delete" && mgr.delete_playlist(&file_path).is_ok() {
+                    reload();
+                }
+            });
+            dialog.present();
         });
     }
 
@@ -395,8 +485,14 @@ fn playlist_detail_view(
     // Botão Voltar às Playlists
     let back = gtk::Button::builder()
         .icon_name("go-previous-symbolic")
-        .label("Back to Playlists")
+        .label(crate::i18n::pick(
+            "Back to Playlists",
+            "Voltar às Playlists",
+        ))
         .build();
+    crate::i18n::bind_button_label(&back, |l| {
+        crate::i18n::pick_for(l, "Back to Playlists", "Voltar às Playlists")
+    });
     back.add_css_class("nav-button");
     back.set_halign(gtk::Align::Start);
     let nav = navigation.downgrade();
@@ -436,9 +532,9 @@ fn playlist_detail_view(
     title.add_css_class("page-title");
     info.append(&title);
 
-    let count_lbl = gtk::Label::new(Some(&format!(
-        "{} track(s) · M3U8 File",
-        playlist.tracks.len()
+    let count_lbl = gtk::Label::new(Some(&crate::i18n::playlist_detail_count(
+        crate::i18n::current(),
+        playlist.tracks.len(),
     )));
     count_lbl.set_xalign(0.0);
     count_lbl.add_css_class("bottom-artist-title");
@@ -449,21 +545,30 @@ fn playlist_detail_view(
 
     let play_btn = gtk::Button::builder()
         .icon_name("media-playback-start-symbolic")
-        .label("Play Playlist")
+        .label(crate::i18n::pick("Play Playlist", "Tocar Playlist"))
         .build();
     play_btn.add_css_class("open-button");
+    crate::i18n::bind_button_label(&play_btn, |l| {
+        crate::i18n::pick_for(l, "Play Playlist", "Tocar Playlist")
+    });
 
     let add_tracks_btn = gtk::Button::builder()
         .icon_name("list-add-symbolic")
-        .label("Add Tracks...")
+        .label(crate::i18n::pick("Add Tracks...", "Adicionar Faixas..."))
         .build();
     add_tracks_btn.add_css_class("folder-button");
+    crate::i18n::bind_button_label(&add_tracks_btn, |l| {
+        crate::i18n::pick_for(l, "Add Tracks...", "Adicionar Faixas...")
+    });
 
     let export_btn = gtk::Button::builder()
         .icon_name("document-save-symbolic")
-        .label("Export...")
+        .label(crate::i18n::pick("Export...", "Exportar..."))
         .build();
     export_btn.add_css_class("folder-button");
+    crate::i18n::bind_button_label(&export_btn, |l| {
+        crate::i18n::pick_for(l, "Export...", "Exportar...")
+    });
 
     action_row.append(&play_btn);
     action_row.append(&add_tracks_btn);
@@ -505,38 +610,7 @@ fn playlist_detail_view(
         let count_weak = count_weak.clone();
         let mgr = manager.clone();
         move || {
-            let Some(list) = list_weak.upgrade() else { return };
-            while let Some(child) = list.first_child() {
-                list.remove(&child);
-            }
-            let pl = pl_state.borrow();
-            if let Some(count_lbl) = count_weak.upgrade() {
-                count_lbl.set_text(&format!("{} track(s) · M3U8 File", pl.tracks.len()));
-            }
-
-            if pl.tracks.is_empty() {
-                let empty = gtk::Label::new(Some(
-                    "This playlist is empty. Click 'Add Tracks...' above.",
-                ));
-                empty.add_css_class("bottom-artist-title");
-                empty.set_margin_top(30);
-                list.append(&empty);
-                return;
-            }
-
-            let all_tracks = Rc::new(pl.tracks.clone());
-            let ctx = PlaylistRowContext {
-                audio: &audio,
-                queue: all_tracks,
-                pl_state: &pl_state,
-                list_weak: &list_weak,
-                count_weak: &count_weak,
-                manager: &mgr,
-            };
-            for (idx, path) in pl.tracks.iter().cloned().enumerate() {
-                let row = playlist_track_row(&ctx, path, idx);
-                list.append(&row);
-            }
+            refresh_playlist_list(&audio, &pl_state, &list_weak, &count_weak, &mgr);
         }
     });
 
@@ -545,9 +619,12 @@ fn playlist_detail_view(
         let pl_state = playlist_state.clone();
         let render = render_rows.clone();
         let mgr = manager.clone();
-        add_tracks_btn.connect_clicked(move |_| {
+        add_tracks_btn.connect_clicked(move |btn| {
             let filter = gtk::FileFilter::new();
-            filter.set_name(Some("Audio Files (*.flac, *.mp3, *.wav, *.ogg, *.m4a)"));
+            filter.set_name(Some(crate::i18n::pick(
+                "Audio Files (*.flac, *.mp3, *.wav, *.ogg, *.m4a)",
+                "Arquivos de Áudio (*.flac, *.mp3, *.wav, *.ogg, *.m4a)",
+            )));
             filter.add_pattern("*.flac");
             filter.add_pattern("*.mp3");
             filter.add_pattern("*.wav");
@@ -557,17 +634,21 @@ fn playlist_detail_view(
             filter.add_pattern("*.aac");
 
             let dialog = gtk::FileDialog::builder()
-                .title("Add Tracks to Playlist")
+                .title(crate::i18n::pick(
+                    "Add Tracks to Playlist",
+                    "Adicionar Faixas à Playlist",
+                ))
                 .build();
             let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
             filters.append(&filter);
             dialog.set_filters(Some(&filters));
 
+            let parent = btn.root().and_then(|r| r.downcast::<gtk::Window>().ok());
             let pl_state = pl_state.clone();
             let render = render.clone();
             let mgr = mgr.clone();
             glib::MainContext::default().spawn_local(async move {
-                if let Ok(files) = dialog.open_multiple_future(None::<&gtk::Window>).await {
+                if let Ok(files) = dialog.open_multiple_future(parent.as_ref()).await {
                     let mut added = false;
                     for i in 0..files.n_items() {
                         if let Some(file) = files.item(i).and_then(|obj| obj.downcast::<gtk::gio::File>().ok()) {
@@ -590,17 +671,21 @@ fn playlist_detail_view(
     // Ação Exportar Playlist
     {
         let pl_state = playlist_state.clone();
-        export_btn.connect_clicked(move |_| {
+        export_btn.connect_clicked(move |btn| {
             let pl_name = pl_state.borrow().name.clone();
             let default_name = format!("{}.m3u8", PlaylistManager::sanitize_filename(&pl_name));
             let dialog = gtk::FileDialog::builder()
-                .title("Export Playlist (.m3u8)")
+                .title(crate::i18n::pick(
+                    "Export Playlist (.m3u8)",
+                    "Exportar Playlist (.m3u8)",
+                ))
                 .initial_name(&default_name)
                 .build();
 
+            let parent = btn.root().and_then(|r| r.downcast::<gtk::Window>().ok());
             let pl_state = pl_state.clone();
             glib::MainContext::default().spawn_local(async move {
-                if let Ok(file) = dialog.save_future(None::<&gtk::Window>).await {
+                if let Ok(file) = dialog.save_future(parent.as_ref()).await {
                     if let Some(path) = file.path() {
                         let pl = pl_state.borrow();
                         let target_pl = Playlist {
@@ -608,14 +693,45 @@ fn playlist_detail_view(
                             file_path: path.clone(),
                             tracks: pl.tracks.clone(),
                         };
+                        let lang = crate::i18n::current();
                         match target_pl.save_to_file() {
                             Ok(()) => {
-                                let msg = format!("Playlist exported successfully to: {}", path.display());
-                                crate::show_system_notification("Export Completed", &msg);
+                                let msg = match lang {
+                                    crate::i18n::Language::En => format!(
+                                        "Playlist exported successfully to: {}",
+                                        path.display()
+                                    ),
+                                    crate::i18n::Language::PtBr => format!(
+                                        "Playlist exportada com sucesso para: {}",
+                                        path.display()
+                                    ),
+                                };
+                                crate::show_system_notification(
+                                    crate::i18n::pick_for(
+                                        lang,
+                                        "Export Completed",
+                                        "Exportação Concluída",
+                                    ),
+                                    &msg,
+                                );
                             }
                             Err(e) => {
-                                let msg = format!("Error exporting playlist: {e}");
-                                crate::show_system_notification("Export Failed", &msg);
+                                let msg = match lang {
+                                    crate::i18n::Language::En => {
+                                        format!("Error exporting playlist: {e}")
+                                    }
+                                    crate::i18n::Language::PtBr => {
+                                        format!("Erro ao exportar playlist: {e}")
+                                    }
+                                };
+                                crate::show_system_notification(
+                                    crate::i18n::pick_for(
+                                        lang,
+                                        "Export Failed",
+                                        "Falha na Exportação",
+                                    ),
+                                    &msg,
+                                );
                             }
                         }
                     }
@@ -624,7 +740,12 @@ fn playlist_detail_view(
         });
     }
 
-    render_rows();
+    {
+        let render_i18n = render_rows.clone();
+        crate::i18n::connect(&page, move |_| {
+            render_i18n();
+        });
+    }
     list_scroll.set_child(Some(&list));
     page.append(&list_scroll);
     page.upcast()
@@ -692,18 +813,24 @@ fn playlist_track_row(
 
     let up_btn = gtk::Button::from_icon_name("go-up-symbolic");
     up_btn.add_css_class("playlist-track-action-btn");
-    up_btn.set_tooltip_text(Some("Move up"));
+    crate::i18n::bind_tooltip(&up_btn, |l| {
+        crate::i18n::pick_for(l, "Move up", "Mover para cima")
+    });
     up_btn.set_sensitive(idx > 0);
 
     let down_btn = gtk::Button::from_icon_name("go-down-symbolic");
     down_btn.add_css_class("playlist-track-action-btn");
-    down_btn.set_tooltip_text(Some("Move down"));
+    crate::i18n::bind_tooltip(&down_btn, |l| {
+        crate::i18n::pick_for(l, "Move down", "Mover para baixo")
+    });
     down_btn.set_sensitive(idx + 1 < queue.len());
 
     let del_btn = gtk::Button::from_icon_name("edit-delete-symbolic");
     del_btn.add_css_class("playlist-track-action-btn");
     del_btn.add_css_class("playlist-track-delete-btn");
-    del_btn.set_tooltip_text(Some("Remove from Playlist"));
+    crate::i18n::bind_tooltip(&del_btn, |l| {
+        crate::i18n::pick_for(l, "Remove from Playlist", "Remover da Playlist")
+    });
 
     actions.append(&up_btn);
     actions.append(&down_btn);
@@ -772,13 +899,16 @@ fn refresh_playlist_list(
         list.remove(&child);
     }
     let pl = pl_state.borrow();
+    let lang = crate::i18n::current();
     if let Some(count_lbl) = count_weak.upgrade() {
-        count_lbl.set_text(&format!("{} track(s) · M3U8 File", pl.tracks.len()));
+        count_lbl.set_text(&crate::i18n::playlist_detail_count(lang, pl.tracks.len()));
     }
     if pl.tracks.is_empty() {
-        let empty = gtk::Label::new(Some(
+        let empty = gtk::Label::new(Some(crate::i18n::pick_for(
+            lang,
             "This playlist is empty. Click 'Add Tracks...' above.",
-        ));
+            "Esta playlist está vazia. Clique em 'Adicionar Faixas...' acima.",
+        )));
         empty.add_css_class("bottom-artist-title");
         empty.set_margin_top(30);
         list.append(&empty);

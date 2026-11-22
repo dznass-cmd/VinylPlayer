@@ -42,7 +42,10 @@ impl QueuePanel {
         widget.set_widget_name("playback-queue");
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         header.add_css_class("queue-heading");
-        let title = gtk::Label::new(Some("Playback queue"));
+        let title = gtk::Label::new(None);
+        crate::i18n::bind_label(&title, |l| {
+            crate::i18n::pick_for(l, "Playback queue", "Fila de reprodução")
+        });
         title.add_css_class("queue-title");
         title.set_hexpand(true);
         title.set_xalign(0.0);
@@ -50,11 +53,15 @@ impl QueuePanel {
         let current_button = gtk::Button::from_icon_name("go-jump-symbolic");
         current_button.add_css_class("queue-close");
         current_button.set_widget_name("queue-reveal-current");
-        current_button.set_tooltip_text(Some("Show current track"));
+        crate::i18n::bind_tooltip(&current_button, |l| {
+            crate::i18n::pick_for(l, "Show current track", "Mostrar faixa atual")
+        });
         header.append(&current_button);
         let close = gtk::Button::from_icon_name("window-close-symbolic");
         close.add_css_class("queue-close");
-        close.set_tooltip_text(Some("Close queue"));
+        crate::i18n::bind_tooltip(&close, |l| {
+            crate::i18n::pick_for(l, "Close queue", "Fechar fila")
+        });
         close.set_action_name(Some("win.toggle-queue"));
         header.append(&close);
         widget.append(&header);
@@ -65,30 +72,48 @@ impl QueuePanel {
         let search = gtk::SearchEntry::new();
         search.add_css_class("queue-search");
         search.set_widget_name("queue-search");
-        search.set_placeholder_text(Some("Title, artist, or album"));
+        crate::i18n::bind_placeholder(&search, |l| {
+            crate::i18n::pick_for(l, "Title, artist, or album", "Título, artista ou álbum")
+        });
         search.set_hexpand(true);
-        search.update_property(&[gtk::accessible::Property::Label("Search queue")]);
+        search.update_property(&[gtk::accessible::Property::Label(crate::i18n::pick(
+            "Search queue",
+            "Buscar na fila",
+        ))]);
         search_box.append(&search);
-        let clear = gtk::Button::with_label("Clear");
+        let clear = gtk::Button::new();
+        crate::i18n::bind_button_label(&clear, |l| crate::i18n::pick_for(l, "Clear", "Limpar"));
         clear.add_css_class("queue-clear");
         clear.set_widget_name("queue-search-clear");
-        clear.set_tooltip_text(Some("Clear search"));
+        crate::i18n::bind_tooltip(&clear, |l| {
+            crate::i18n::pick_for(l, "Clear search", "Limpar busca")
+        });
         search_box.append(&clear);
         widget.append(&search_box);
         let count = gtk::Label::new(None);
         count.set_xalign(0.0);
         count.add_css_class("queue-summary");
         widget.append(&count);
-        let hint = gtk::Label::new(Some(
-            "Arraste pela alça para ordenar. As setas movem na fila completa, mesmo com busca.",
-        ));
+        let hint = gtk::Label::new(None);
+        crate::i18n::bind_label(&hint, |l| {
+            crate::i18n::pick_for(
+                l,
+                "Drag by handle to reorder. Arrows move items in the full queue, even while filtered.",
+                "Arraste pela alça para ordenar. As setas movem na fila completa, mesmo com busca.",
+            )
+        });
         hint.set_wrap(true);
         hint.set_xalign(0.0);
         hint.add_css_class("queue-hint");
         widget.append(&hint);
-        let empty = gtk::Label::new(Some(
-            "Sua fila está vazia.\nAbra uma música ou reproduza um álbum.",
-        ));
+        let empty = gtk::Label::new(None);
+        crate::i18n::bind_label(&empty, |l| {
+            crate::i18n::pick_for(
+                l,
+                "Your queue is empty.\nOpen a track or play an album.",
+                "Sua fila está vazia.\nAbra uma música ou reproduza um álbum.",
+            )
+        });
         empty.set_wrap(true);
         empty.set_xalign(0.0);
         empty.add_css_class("queue-empty");
@@ -150,13 +175,17 @@ impl QueuePanel {
         let factory = gtk::SignalListItemFactory::new();
         let setup = shared.clone();
         factory.connect_setup(move |_, object| {
-            let item = object.downcast_ref::<gtk::ListItem>().unwrap();
+            let Some(item) = object.downcast_ref::<gtk::ListItem>() else {
+                return;
+            };
             setup.rows.borrow_mut().push(item.downgrade());
             setup_row(item, &setup);
         });
         let bind = shared.clone();
         factory.connect_bind(move |_, object| {
-            update_row(object.downcast_ref::<gtk::ListItem>().unwrap(), &bind);
+            if let Some(item) = object.downcast_ref::<gtk::ListItem>() {
+                update_row(item, &bind);
+            }
         });
         let selection = gtk::NoSelection::new(Some(shared.model.clone()));
         let list = gtk::ListView::new(Some(selection), Some(factory));
@@ -175,6 +204,14 @@ impl QueuePanel {
         let weak_list = list.downgrade();
         let map_shared = shared.clone();
         widget.connect_map(move |_| scroll_current(&map_shared, &weak_list));
+        {
+            let shared_i18n = shared.clone();
+            crate::i18n::connect(&widget, move |_| {
+                if shared_i18n.snapshot.borrow().is_some() {
+                    apply_filter(&shared_i18n);
+                }
+            });
+        }
         let panel = Self { widget, shared };
         panel.refresh();
         panel
@@ -270,35 +307,47 @@ fn apply_filter(shared: &Rc<Shared>) {
         );
     }
     {
-        let snapshot = shared.snapshot.borrow();
-        let snapshot = snapshot.as_ref().unwrap();
+        let snapshot_guard = shared.snapshot.borrow();
+        let Some(snapshot) = snapshot_guard.as_ref() else {
+            return;
+        };
         let len = snapshot.tracks.len();
         let pending = snapshot
             .tracks
             .iter()
             .any(|path| !shared.tags.borrow().contains_key(path));
+        let lang = crate::i18n::current();
         let next = snapshot.current.map_or(len, |i| len.saturating_sub(i + 1));
         if query.trim().is_empty() {
-            let noun = if len == 1 { "track" } else { "tracks" };
             shared
                 .count
-                .set_text(&format!("{len} {noun} · {next} upcoming"));
+                .set_text(&crate::i18n::queue_summary(lang, len, next));
         } else {
-            let loading = if pending {
-                " · reading metadata…"
-            } else {
-                ""
-            };
-            shared
-                .count
-                .set_text(&format!("{} of {len} tracks{loading}", indices.len()));
+            shared.count.set_text(&crate::i18n::queue_search_summary(
+                lang,
+                indices.len(),
+                len,
+                pending,
+            ));
         }
         shared.empty.set_text(if len == 0 {
-            "Your queue is empty.\nOpen a track or play an album."
+            crate::i18n::pick_for(
+                lang,
+                "Your queue is empty.\nOpen a track or play an album.",
+                "Sua fila está vazia.\nAbra uma música ou reproduza um álbum.",
+            )
         } else if pending {
-            "Reading queue metadata…"
+            crate::i18n::pick_for(
+                lang,
+                "Reading queue metadata…",
+                "Lendo metadados da fila…",
+            )
         } else {
-            "No tracks found.\nTry another search term or clear."
+            crate::i18n::pick_for(
+                lang,
+                "No tracks found.\nTry another search term or clear.",
+                "Nenhuma faixa encontrada.\nTente outro termo ou limpe a busca.",
+            )
         });
         shared.empty.set_visible(indices.is_empty());
     }
@@ -366,7 +415,9 @@ fn setup_row(item: &gtk::ListItem, shared: &Rc<Shared>) {
     row.add_css_class("queue-row");
     let handle = gtk::Image::from_icon_name("list-drag-handle-symbolic");
     handle.add_css_class("queue-handle");
-    handle.set_tooltip_text(Some("Arraste para reorganizar"));
+    crate::i18n::bind_tooltip(&handle, |l| {
+        crate::i18n::pick_for(l, "Drag to reorder", "Arraste para reorganizar")
+    });
     row.append(&handle);
     let play = gtk::Button::new();
     play.add_css_class("queue-track");
@@ -383,13 +434,28 @@ fn setup_row(item: &gtk::ListItem, shared: &Rc<Shared>) {
     play.set_child(Some(&labels));
     row.append(&play);
     let buttons = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    for (icon, label, direction) in [
-        ("go-up-symbolic", "Move up", -1_isize),
-        ("go-down-symbolic", "Move down", 1),
-        ("list-remove-symbolic", "Remove from queue", 0),
+    for (icon, tip_fn, direction) in [
+        (
+            "go-up-symbolic",
+            (|l| crate::i18n::pick_for(l, "Move up", "Mover para cima"))
+                as fn(crate::i18n::Language) -> &'static str,
+            -1_isize,
+        ),
+        (
+            "go-down-symbolic",
+            (|l| crate::i18n::pick_for(l, "Move down", "Mover para baixo"))
+                as fn(crate::i18n::Language) -> &'static str,
+            1,
+        ),
+        (
+            "list-remove-symbolic",
+            (|l| crate::i18n::pick_for(l, "Remove from queue", "Remover da fila"))
+                as fn(crate::i18n::Language) -> &'static str,
+            0,
+        ),
     ] {
         let button = gtk::Button::from_icon_name(icon);
-        button.set_tooltip_text(Some(label));
+        crate::i18n::bind_tooltip(&button, tip_fn);
         button.add_css_class("queue-action");
         button.set_widget_name(match direction {
             -1 => "queue-up",
@@ -501,7 +567,10 @@ fn setup_row(item: &gtk::ListItem, shared: &Rc<Shared>) {
         if version != revision {
             report(
                 &drop_shared,
-                Err(anyhow::anyhow!("A fila mudou. Arraste novamente.")),
+                Err(anyhow::anyhow!(crate::i18n::pick(
+                    "The queue changed. Drag again.",
+                    "A fila mudou. Arraste novamente.",
+                ))),
             );
             return false;
         }
@@ -520,28 +589,41 @@ fn update_row(item: &gtk::ListItem, shared: &Shared) {
     let Some((_, index)) = row_index(item, shared) else {
         return;
     };
-    let snapshot = shared.snapshot.borrow();
-    let snapshot = snapshot.as_ref().unwrap();
-    let path = &snapshot.tracks[index];
-    let row = item.child().unwrap().downcast::<gtk::Box>().unwrap();
-    let play = row
+    let snapshot_guard = shared.snapshot.borrow();
+    let Some(snapshot) = snapshot_guard.as_ref() else {
+        return;
+    };
+    let Some(path) = snapshot.tracks.get(index) else {
+        return;
+    };
+    let Some(child) = item.child() else {
+        return;
+    };
+    let Ok(row) = child.downcast::<gtk::Box>() else {
+        return;
+    };
+    let Some(play) = row
         .first_child()
-        .unwrap()
-        .next_sibling()
-        .unwrap()
-        .downcast::<gtk::Button>()
-        .unwrap();
-    let labels = play.child().unwrap();
-    let title = labels
+        .and_then(|c| c.next_sibling())
+        .and_then(|c| c.downcast::<gtk::Button>().ok())
+    else {
+        return;
+    };
+    let Some(labels) = play.child() else {
+        return;
+    };
+    let Some(title) = labels
         .first_child()
-        .unwrap()
-        .downcast::<gtk::Label>()
-        .unwrap();
-    let subtitle = labels
+        .and_then(|c| c.downcast::<gtk::Label>().ok())
+    else {
+        return;
+    };
+    let Some(subtitle) = labels
         .last_child()
-        .unwrap()
-        .downcast::<gtk::Label>()
-        .unwrap();
+        .and_then(|c| c.downcast::<gtk::Label>().ok())
+    else {
+        return;
+    };
     let current = snapshot.current == Some(index);
     let state = shared.audio.state();
     let name = path.file_stem().unwrap_or_default().to_string_lossy();
@@ -552,10 +634,13 @@ fn update_row(item: &gtk::ListItem, shared: &Shared) {
         } else {
             &metadata.title
         });
-        subtitle.set_text(match state {
-            PlaybackState::Playing => "Em reprodução",
-            PlaybackState::Paused => "Pausada",
-            PlaybackState::Stopped => "Selecionada",
+        subtitle.set_text(match (crate::i18n::current(), state) {
+            (crate::i18n::Language::En, PlaybackState::Playing) => "Now playing",
+            (crate::i18n::Language::PtBr, PlaybackState::Playing) => "Em reprodução",
+            (crate::i18n::Language::En, PlaybackState::Paused) => "Paused",
+            (crate::i18n::Language::PtBr, PlaybackState::Paused) => "Pausada",
+            (crate::i18n::Language::En, PlaybackState::Stopped) => "Selected",
+            (crate::i18n::Language::PtBr, PlaybackState::Stopped) => "Selecionada",
         });
         row.add_css_class("queue-current");
     } else {
@@ -587,16 +672,14 @@ fn update_row(item: &gtk::ListItem, shared: &Shared) {
         row.remove_css_class("queue-current");
     }
     play.set_tooltip_text(Some(&path.to_string_lossy()));
-    play.update_property(&[gtk::accessible::Property::Label(&format!(
-        "Play {}",
-        title.text()
-    ))]);
-    let buttons = row.last_child().unwrap();
-    buttons.first_child().unwrap().set_sensitive(index > 0);
-    buttons
-        .first_child()
-        .unwrap()
-        .next_sibling()
-        .unwrap()
-        .set_sensitive(index + 1 < snapshot.tracks.len());
+    let play_label = format!("{} {}", crate::i18n::pick("Play", "Tocar"), title.text());
+    play.update_property(&[gtk::accessible::Property::Label(&play_label)]);
+    if let Some(buttons) = row.last_child() {
+        if let Some(up) = buttons.first_child() {
+            up.set_sensitive(index > 0);
+            if let Some(down) = up.next_sibling() {
+                down.set_sensitive(index + 1 < snapshot.tracks.len());
+            }
+        }
+    }
 }

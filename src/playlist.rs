@@ -41,10 +41,12 @@ impl Playlist {
                     tracks.push(path);
                     continue;
                 } else if let Some(stripped) = line.strip_prefix("file://localhost") {
-                    tracks.push(PathBuf::from(stripped));
+                    let decoded = percent_decode_path(stripped);
+                    tracks.push(PathBuf::from(decoded));
                     continue;
                 } else if let Some(stripped) = line.strip_prefix("file://") {
-                    tracks.push(PathBuf::from(stripped));
+                    let decoded = percent_decode_path(stripped);
+                    tracks.push(PathBuf::from(decoded));
                     continue;
                 }
             }
@@ -334,6 +336,24 @@ impl PlaylistManager {
     }
 }
 
+fn percent_decode_path(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(&input[i + 1..i + 3], 16) {
+                decoded.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(decoded).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,10 +515,11 @@ subpasta/musica3.mp3
 
     #[test]
     fn parses_file_uri_and_windows_paths() {
-        let content = "file:///home/user/Music/Pink%20Floyd/Time.mp3\nMusic\\Rock\\Queen.mp3\n";
+        let content = "file:///home/user/Music/Pink%20Floyd/Time.mp3\nfile://localhost/home/user/Music/Led%20Zeppelin/Kashmir.flac\nMusic\\Rock\\Queen.mp3\n";
         let tracks = Playlist::parse_m3u(content, Some(Path::new("/home/user")));
         assert_eq!(tracks[0], PathBuf::from("/home/user/Music/Pink Floyd/Time.mp3"));
-        assert_eq!(tracks[1], PathBuf::from("/home/user/Music/Rock/Queen.mp3"));
+        assert_eq!(tracks[1], PathBuf::from("/home/user/Music/Led Zeppelin/Kashmir.flac"));
+        assert_eq!(tracks[2], PathBuf::from("/home/user/Music/Rock/Queen.mp3"));
     }
 
     #[test]

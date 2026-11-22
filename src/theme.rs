@@ -49,14 +49,21 @@ impl Theme {
         }
     }
 
-    pub fn description(&self) -> &'static str {
-        match self {
-            Theme::AmberGold => "Vintage warm amber gold (classic)",
-            Theme::MarantzBlue => "70s classic stereo receiver blue",
-            Theme::EmeraldTube => "Vintage McIntosh tube amplifier green",
-            Theme::RubySunset => "Warm analog reel-to-reel terracotta",
-            Theme::MidnightViolet => "Aesthetic deep purple & vinyl indigo",
-            Theme::ObsidianSilver => "Brushed silver & minimal graphite",
+    pub fn description_for(&self, lang: crate::i18n::Language) -> &'static str {
+        use crate::i18n::Language;
+        match (lang, self) {
+            (Language::En, Theme::AmberGold) => "Vintage warm amber gold (classic)",
+            (Language::PtBr, Theme::AmberGold) => "Ouro âmbar aquecido retrô (clássico)",
+            (Language::En, Theme::MarantzBlue) => "70s classic stereo receiver blue",
+            (Language::PtBr, Theme::MarantzBlue) => "Azul clássico de receiver estéreo dos anos 70",
+            (Language::En, Theme::EmeraldTube) => "Vintage McIntosh tube amplifier green",
+            (Language::PtBr, Theme::EmeraldTube) => "Verde valvulado clássico estilo McIntosh",
+            (Language::En, Theme::RubySunset) => "Warm analog reel-to-reel terracotta",
+            (Language::PtBr, Theme::RubySunset) => "Terracota analógico quente de rolo",
+            (Language::En, Theme::MidnightViolet) => "Aesthetic deep purple & vinyl indigo",
+            (Language::PtBr, Theme::MidnightViolet) => "Roxo profundo & índigo vinil",
+            (Language::En, Theme::ObsidianSilver) => "Brushed silver & minimal graphite",
+            (Language::PtBr, Theme::ObsidianSilver) => "Prata escovado & grafite minimalista",
         }
     }
 
@@ -176,21 +183,29 @@ impl Theme {
             .version-badge {{ background: {bg}; color: {acc}; border-color: {bor}; }}
             .play-button {{ background: {acc}; color: {txt}; }}
             .play-button:hover {{ background: {hov}; }}
+            .control-button.active {{ color: {acc}; background: {bbg}; }}
+            .control-button.active:hover {{ color: {hov}; background: {bbor}; }}
             .queue-toggle:checked {{ background: {bg}; border-color: {bor}; }}
             .queue-toggle label, .queue-toggle image {{ color: {acc}; }}
             .queue-current {{ background: {bg}; }}
             .queue-current .queue-track-title {{ color: {acc}; }}
             .queue-summary {{ color: {acc}; }}
+            .queue-search:focus-within {{ border-color: {acc}; }}
+            .queue-clear {{ color: {acc}; }}
+            .queue-clear:hover {{ background: {bg}; color: {hov}; }}
             .queue-drop-before {{ border-top-color: {acc}; }}
             .queue-drop-after {{ border-bottom-color: {acc}; }}
             .listening-status.is-playing {{ background: {bg}; border-color: {bor}; }}
             .listening-status.is-playing label, .listening-status.is-playing image {{ color: {acc}; }}
+            .listening-format {{ color: {acc}; background: {bg}; border-color: {bor}; }}
             .rpm-button:checked {{ background: {bg}; border-color: {bor}; color: {acc}; }}
+            .search-box:focus-within {{ border-color: {acc}; }}
             .open-button {{ background: {acc}; border-color: {acc}; color: {txt}; }}
             .open-button:hover {{ background: {hov}; border-color: {hov}; }}
             .mini-disc-icon {{ color: {acc}; }}
             .mini-cover-container {{ border-color: {bor}; }}
             scale highlight {{ background: {acc}; }}
+            .badge-hires {{ background: {bg}; color: {acc}; }}
             .sort-dropdown:hover {{ border-color: {bor}; }}
             .album-view-switcher button:checked {{ background: {bg}; color: {acc}; }}
             .album-cover-button:hover {{ border-color: {acc}; }}
@@ -201,6 +216,9 @@ impl Theme {
             .track-item-button.playback-current {{ background: {bg}; }}
             .track-item-button.playback-current .track-row-name,
             .track-item-button.playback-current .track-icon {{ color: {acc}; }}
+            .enqueue-menu > button:hover {{ background: {bg}; border-color: {bor}; }}
+            .folder-button:hover {{ border-color: {bor}; }}
+            button:focus-visible {{ outline-color: {acc}; }}
             .playlist-card:hover {{ border-color: {bor}; }}
             .playlist-badge-icon {{ color: {acc}; background: {bg}; border-color: {bor}; }}
             .playlist-detail-badge {{ background: {bg}; border-color: {bor}; color: {acc}; }}
@@ -266,6 +284,19 @@ mod tests {
             assert!(!theme.accent_color().is_empty());
             let css = theme.generate_css();
             assert!(css.contains(theme.accent_color()));
+            for selector in [
+                ".control-button.active",
+                ".listening-format",
+                ".badge-hires",
+                ".queue-clear",
+                ".queue-search:focus-within",
+                ".search-box:focus-within",
+                ".enqueue-menu > button:hover",
+                ".folder-button:hover",
+                "button:focus-visible",
+            ] {
+                assert!(css.contains(selector), "missing theme override for {selector}");
+            }
         }
         assert_eq!(Theme::from_id("unknown"), Theme::AmberGold);
     }

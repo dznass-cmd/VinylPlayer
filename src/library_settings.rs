@@ -85,7 +85,11 @@ impl Catalog {
             }
             let new_report = result.unwrap_or_else(|_| library_sources::ScanReport {
                 tracks: Vec::new(),
-                warnings: vec!["Could not read folders. Try refreshing again.".into()],
+                warnings: vec![crate::i18n::pick(
+                    "Could not read folders. Try refreshing again.",
+                    "Não foi possível ler as pastas. Tente atualizar novamente.",
+                )
+                .into()],
             });
             library_sources::CachedLibrary::save_to(&cache_path, &roots, &new_report.tracks);
             *catalog.report.borrow_mut() = new_report;
@@ -95,7 +99,11 @@ impl Catalog {
 
     pub fn add_root(self: &Rc<Self>, path: PathBuf) -> Result<(), String> {
         if !path.is_absolute() || !path.is_dir() {
-            return Err("Please choose an available local folder.".into());
+            return Err(crate::i18n::pick(
+                "Please choose an available local folder.",
+                "Escolha uma pasta local disponível.",
+            )
+            .into());
         }
         let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
         let mut roots = self.state.snapshot().library_roots();
@@ -103,7 +111,11 @@ impl Catalog {
             .iter()
             .any(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) == path)
         {
-            return Err("This folder is already in the library.".into());
+            return Err(crate::i18n::pick(
+                "This folder is already in the library.",
+                "Esta pasta já está na biblioteca.",
+            )
+            .into());
         }
         roots.push(path);
         self.state.update_library_folders(roots);
@@ -121,29 +133,58 @@ impl Catalog {
     }
 
     pub fn summary(&self) -> String {
+        let lang = crate::i18n::current();
         if self.scanning.get() && self.report.borrow().tracks.is_empty() {
-            "Reading library folders…".into()
+            crate::i18n::pick_for(
+                lang,
+                "Reading library folders…",
+                "Lendo pastas da biblioteca…",
+            )
+            .into()
         } else {
             let report = self.report.borrow();
-            let count = report.tracks.len();
-            let noun = if count == 1 { "track" } else { "tracks" };
-            match report.warnings.len() {
-                0 => format!("{count} {noun}"),
-                1 => format!("{count} {noun} · 1 warning"),
-                warnings => format!("{count} {noun} · {warnings} warnings"),
-            }
+            crate::i18n::summary_tracks(lang, report.tracks.len(), report.warnings.len())
         }
     }
 }
 
 pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Window {
+    use crate::i18n;
     let window = gtk::Window::builder()
-        .title(format!("Settings & Library Folders (v{})", env!("CARGO_PKG_VERSION")))
+        .title(i18n::settings_window_title(
+            i18n::current(),
+            env!("CARGO_PKG_VERSION"),
+        ))
         .transient_for(parent)
         .destroy_with_parent(true)
         .default_width(620)
-        .default_height(640)
+        .default_height(680)
         .build();
+    {
+        let win_weak = window.downgrade();
+        i18n::connect(&window, move |lang| {
+            if let Some(win) = win_weak.upgrade() {
+                win.set_title(Some(&i18n::settings_window_title(
+                    lang,
+                    env!("CARGO_PKG_VERSION"),
+                )));
+            }
+        });
+    }
+    {
+        let key_ctrl = gtk::EventControllerKey::new();
+        let win_esc = window.downgrade();
+        key_ctrl.connect_key_pressed(move |_, keyval, _, _| {
+            if keyval == gtk::gdk::Key::Escape {
+                if let Some(win) = win_esc.upgrade() {
+                    win.close();
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        window.add_controller(key_ctrl);
+    }
     let body = gtk::Box::new(gtk::Orientation::Vertical, 14);
     window.add_css_class("library-settings");
     body.add_css_class("app-shell");
@@ -151,16 +192,31 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     body.set_margin_bottom(22);
     body.set_margin_start(22);
     body.set_margin_end(22);
-    let title = gtk::Label::new(Some(&format!("Your collection, your folders · v{}", env!("CARGO_PKG_VERSION"))));
+    let title = gtk::Label::new(None);
+    {
+        let title_weak = title.downgrade();
+        i18n::connect(&title, move |lang| {
+            if let Some(lbl) = title_weak.upgrade() {
+                lbl.set_text(&i18n::settings_heading(lang, env!("CARGO_PKG_VERSION")));
+            }
+        });
+    }
     title.add_css_class("page-title");
     title.set_xalign(0.0);
     title.set_hexpand(true);
     let heading = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     heading.append(&title);
-    let close = gtk::Button::with_label("Close");
+    let close = gtk::Button::new();
+    i18n::bind_button_label(&close, |l| i18n::pick_for(l, "Close", "Fechar"));
     close.set_widget_name("folder-close");
     close.add_css_class("folder-button");
-    close.set_tooltip_text(Some("Close library settings"));
+    i18n::bind_tooltip(&close, |l| {
+        i18n::pick_for(
+            l,
+            "Close library settings (Esc)",
+            "Fechar configurações da biblioteca (Esc)",
+        )
+    });
     let weak_window = window.downgrade();
     close.connect_clicked(move |_| {
         if let Some(window) = weak_window.upgrade() {
@@ -169,16 +225,27 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     });
     heading.append(&close);
     body.append(&heading);
-    let hint = gtk::Label::new(Some("Adding or removing folders updates the library. Your files and current queue are preserved."));
+    let hint = gtk::Label::new(None);
+    i18n::bind_label(&hint, |l| {
+        i18n::pick_for(
+            l,
+            "Adding or removing folders updates the library. Your files and current queue are preserved.",
+            "Adicionar ou remover pastas atualiza a biblioteca. Seus arquivos e a fila atual são preservados.",
+        )
+    });
     hint.set_wrap(true);
     hint.set_xalign(0.0);
     hint.add_css_class("bottom-artist-title");
     body.append(&hint);
     let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    let add = gtk::Button::with_label("Add Folder");
+    let add = gtk::Button::new();
+    i18n::bind_button_label(&add, |l| i18n::pick_for(l, "Add Folder", "Adicionar Pasta"));
     add.set_widget_name("folder-add");
     add.add_css_class("open-button");
-    let refresh = gtk::Button::with_label("Refresh Library");
+    let refresh = gtk::Button::new();
+    i18n::bind_button_label(&refresh, |l| {
+        i18n::pick_for(l, "Refresh Library", "Atualizar Biblioteca")
+    });
     refresh.add_css_class("folder-button");
     refresh.set_widget_name("folder-refresh");
     toolbar.append(&add);
@@ -191,7 +258,10 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::None);
     list.add_css_class("folders-list");
-    let empty = gtk::Label::new(Some("No folders added."));
+    let empty = gtk::Label::new(None);
+    i18n::bind_label(&empty, |l| {
+        i18n::pick_for(l, "No folders added.", "Nenhuma pasta adicionada.")
+    });
     list.set_placeholder(Some(&empty));
     let scroll = gtk::ScrolledWindow::builder()
         .vexpand(false)
@@ -202,17 +272,90 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
         .build();
     body.append(&scroll);
 
+    // Seção de Idioma / Language
+    let lang_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    lang_box.set_margin_top(10);
+    lang_box.set_margin_bottom(4);
+    let lang_title = gtk::Label::new(None);
+    i18n::bind_label(&lang_title, |l| i18n::pick_for(l, "Language · Idioma", "Idioma · Language"));
+    lang_title.add_css_class("system-audio-title");
+    lang_title.set_xalign(0.0);
+    lang_box.append(&lang_title);
+
+    let lang_row = gtk::Grid::builder()
+        .column_spacing(10)
+        .row_spacing(6)
+        .hexpand(true)
+        .build();
+    let lang_buttons: Rc<RefCell<Vec<(i18n::Language, gtk::Button, gtk::Label)>>> =
+        Rc::new(RefCell::new(Vec::new()));
+    for (col_idx, &lang) in i18n::Language::ALL.iter().enumerate() {
+        let btn = gtk::Button::new();
+        btn.add_css_class("theme-btn");
+        btn.set_hexpand(true);
+        let row_content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let lbl = gtk::Label::new(Some(lang.native_label()));
+        lbl.set_xalign(0.0);
+        lbl.set_hexpand(true);
+        let check = gtk::Label::new(Some("✓"));
+        check.add_css_class("theme-btn-check");
+        let is_active = lang == i18n::current();
+        check.set_visible(is_active);
+        if is_active {
+            btn.add_css_class("active");
+        }
+        row_content.append(&lbl);
+        row_content.append(&check);
+        btn.set_child(Some(&row_content));
+        lang_row.attach(&btn, col_idx as i32, 0, 1, 1);
+        lang_buttons.borrow_mut().push((lang, btn.clone(), check));
+
+        let state_lang = catalog.state.clone();
+        btn.connect_clicked(move |_| {
+            state_lang.update_language(Some(lang.code().to_string()));
+            state_lang.flush_if_dirty();
+            i18n::set_current(lang);
+        });
+    }
+    {
+        let lang_btns_sync = lang_buttons.clone();
+        i18n::connect(&lang_row, move |active_lang| {
+            for (l, b, chk) in lang_btns_sync.borrow().iter() {
+                let active = *l == active_lang;
+                if active {
+                    b.add_css_class("active");
+                    chk.set_visible(true);
+                } else {
+                    b.remove_css_class("active");
+                    chk.set_visible(false);
+                }
+            }
+        });
+    }
+    lang_box.append(&lang_row);
+    body.append(&lang_box);
+
     // Seção de Tema de Cores / Interface Theme
     let theme_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
     theme_box.set_margin_top(12);
     theme_box.set_margin_bottom(6);
 
-    let theme_title = gtk::Label::new(Some("Interface Theme · Tema de Cores"));
+    let theme_title = gtk::Label::new(None);
+    i18n::bind_label(&theme_title, |l| {
+        i18n::pick_for(l, "Interface Theme", "Tema da Interface")
+    });
     theme_title.add_css_class("system-audio-title");
     theme_title.set_xalign(0.0);
     theme_box.append(&theme_title);
 
-    let theme_hint = gtk::Label::new(Some("Choose an analog accent palette for controls, dials, and highlights:"));
+    let theme_hint = gtk::Label::new(None);
+    i18n::bind_label(&theme_hint, |l| {
+        i18n::pick_for(
+            l,
+            "Choose an analog accent palette for controls, dials, and highlights:",
+            "Escolha uma paleta analógica de destaque para controles, dials e realces:",
+        )
+    });
     theme_hint.set_xalign(0.0);
     theme_hint.add_css_class("bottom-artist-title");
     theme_box.append(&theme_hint);
@@ -230,7 +373,15 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
         let btn = gtk::Button::new();
         btn.add_css_class("theme-btn");
         btn.set_hexpand(true);
-        btn.set_tooltip_text(Some(theme.description()));
+        btn.set_tooltip_text(Some(theme.description_for(i18n::current())));
+        {
+            let btn_weak = btn.downgrade();
+            i18n::connect(&btn, move |lang| {
+                if let Some(b) = btn_weak.upgrade() {
+                    b.set_tooltip_text(Some(theme.description_for(lang)));
+                }
+            });
+        }
 
         let row_content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
 
@@ -299,12 +450,34 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     analog_box.set_margin_top(10);
     analog_box.set_margin_bottom(6);
 
-    let analog_title = gtk::Label::new(Some("Analog Experience"));
+    let analog_title = gtk::Label::new(None);
+    i18n::bind_label(&analog_title, |l| {
+        i18n::pick_for(
+            l,
+            "Analog Experience & Notifications",
+            "Experiência Analógica e Notificações",
+        )
+    });
     analog_title.add_css_class("system-audio-title");
     analog_title.set_xalign(0.0);
     analog_box.append(&analog_title);
 
-    let chk_needle = gtk::CheckButton::with_label("Needle Drop acoustic effect on playback start");
+    let chk_needle = gtk::CheckButton::with_label(i18n::pick(
+        "Needle Drop acoustic effect on playback start",
+        "Efeito acústico de agulha ao iniciar a reprodução",
+    ));
+    {
+        let c = chk_needle.downgrade();
+        i18n::connect(&chk_needle, move |l| {
+            if let Some(b) = c.upgrade() {
+                b.set_label(Some(i18n::pick_for(
+                    l,
+                    "Needle Drop acoustic effect on playback start",
+                    "Efeito acústico de agulha ao iniciar a reprodução",
+                )));
+            }
+        });
+    }
     chk_needle.set_active(catalog.state.snapshot().needle_drop);
     let state_needle = catalog.state.clone();
     chk_needle.connect_toggled(move |btn| {
@@ -313,7 +486,22 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     });
     analog_box.append(&chk_needle);
 
-    let chk_light = gtk::CheckButton::with_label("Stylus Target Light on platter");
+    let chk_light = gtk::CheckButton::with_label(i18n::pick(
+        "Stylus Target Light on platter",
+        "Luz alvo na agulha sobre o prato",
+    ));
+    {
+        let c = chk_light.downgrade();
+        i18n::connect(&chk_light, move |l| {
+            if let Some(b) = c.upgrade() {
+                b.set_label(Some(i18n::pick_for(
+                    l,
+                    "Stylus Target Light on platter",
+                    "Luz alvo na agulha sobre o prato",
+                )));
+            }
+        });
+    }
     chk_light.set_active(catalog.state.snapshot().target_light);
     let state_light = catalog.state.clone();
     chk_light.connect_toggled(move |btn| {
@@ -322,10 +510,35 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     });
     analog_box.append(&chk_light);
 
+    let chk_notifications = gtk::CheckButton::with_label(i18n::pick(
+        "Show desktop notifications on track change",
+        "Mostrar notificações na área de trabalho ao trocar de faixa",
+    ));
+    {
+        let c = chk_notifications.downgrade();
+        i18n::connect(&chk_notifications, move |l| {
+            if let Some(b) = c.upgrade() {
+                b.set_label(Some(i18n::pick_for(
+                    l,
+                    "Show desktop notifications on track change",
+                    "Mostrar notificações na área de trabalho ao trocar de faixa",
+                )));
+            }
+        });
+    }
+    chk_notifications.set_active(catalog.state.snapshot().notifications);
+    let state_notif = catalog.state.clone();
+    chk_notifications.connect_toggled(move |btn| {
+        state_notif.update_notifications(btn.is_active());
+        state_notif.flush_if_dirty();
+    });
+    analog_box.append(&chk_notifications);
+
     {
         let state_sync = catalog.state.clone();
         let chk_needle_sync = chk_needle.downgrade();
         let chk_light_sync = chk_light.downgrade();
+        let chk_notif_sync = chk_notifications.downgrade();
         window.connect_is_active_notify(move |win| {
             if !win.is_active() {
                 return;
@@ -339,6 +552,11 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
             if let Some(chk) = chk_light_sync.upgrade() {
                 if chk.is_active() != snap.target_light {
                     chk.set_active(snap.target_light);
+                }
+            }
+            if let Some(chk) = chk_notif_sync.upgrade() {
+                if chk.is_active() != snap.notifications {
+                    chk.set_active(snap.notifications);
                 }
             }
         });
@@ -356,7 +574,22 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     lastfm_title.set_xalign(0.0);
     lastfm_box.append(&lastfm_title);
 
-    let chk_lastfm = gtk::CheckButton::with_label("Scrobble tracks and update Now Playing on Last.fm");
+    let chk_lastfm = gtk::CheckButton::with_label(i18n::pick(
+        "Scrobble tracks and update Now Playing on Last.fm",
+        "Enviar scrobbles e atualizar \"Ouvindo agora\" no Last.fm",
+    ));
+    {
+        let c = chk_lastfm.downgrade();
+        i18n::connect(&chk_lastfm, move |l| {
+            if let Some(b) = c.upgrade() {
+                b.set_label(Some(i18n::pick_for(
+                    l,
+                    "Scrobble tracks and update Now Playing on Last.fm",
+                    "Enviar scrobbles e atualizar \"Ouvindo agora\" no Last.fm",
+                )));
+            }
+        });
+    }
     chk_lastfm.set_active(catalog.state.snapshot().lastfm_enabled);
     let state_lfm = catalog.state.clone();
     chk_lastfm.connect_toggled(move |btn| {
@@ -384,27 +617,71 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
         let btn = lfm_btn.clone();
         let token_cell = pending_token.clone();
         Rc::new(move || {
+            let lang = i18n::current();
             let snap = state.snapshot();
             if let Some(user) = snap.lastfm_username.as_deref() {
-                status_lbl.set_text(&format!("Connected as: {user}"));
-                btn.set_label("Disconnect");
+                status_lbl.set_text(&match lang {
+                    i18n::Language::En => format!("Connected as: {user}"),
+                    i18n::Language::PtBr => format!("Conectado como: {user}"),
+                });
+                btn.set_label(i18n::pick_for(lang, "Disconnect", "Desconectar"));
                 btn.remove_css_class("open-button");
                 btn.add_css_class("folder-button");
                 *token_cell.borrow_mut() = None;
             } else if token_cell.borrow().is_some() {
-                status_lbl.set_text("Awaiting authorization in browser…");
-                btn.set_label("Complete Connection");
+                status_lbl.set_text(i18n::pick_for(
+                    lang,
+                    "Awaiting authorization in browser…",
+                    "Aguardando autorização no navegador…",
+                ));
+                btn.set_label(i18n::pick_for(
+                    lang,
+                    "Complete Connection",
+                    "Concluir Conexão",
+                ));
                 btn.remove_css_class("folder-button");
                 btn.add_css_class("open-button");
             } else {
-                status_lbl.set_text("Not connected to Last.fm");
-                btn.set_label("Connect to Last.fm");
+                status_lbl.set_text(i18n::pick_for(
+                    lang,
+                    "Not connected to Last.fm",
+                    "Não conectado ao Last.fm",
+                ));
+                btn.set_label(i18n::pick_for(
+                    lang,
+                    "Connect to Last.fm",
+                    "Conectar ao Last.fm",
+                ));
                 btn.remove_css_class("folder-button");
                 btn.add_css_class("open-button");
             }
         })
     };
     (update_lfm_view)();
+    {
+        let upd = update_lfm_view.clone();
+        i18n::connect(&lfm_row, move |_| {
+            upd();
+        });
+    }
+
+    let api_expander = gtk::Expander::new(Some(i18n::pick(
+        "Custom API Credentials (Optional)",
+        "Credenciais de API Personalizadas (Opcional)",
+    )));
+    {
+        let exp = api_expander.downgrade();
+        i18n::connect(&api_expander, move |l| {
+            if let Some(e) = exp.upgrade() {
+                e.set_label(Some(i18n::pick_for(
+                    l,
+                    "Custom API Credentials (Optional)",
+                    "Credenciais de API Personalizadas (Opcional)",
+                )));
+            }
+        });
+    }
+    api_expander.set_margin_top(4);
 
     let weak_w = window.downgrade();
     let btn_state = catalog.state.clone();
@@ -412,6 +689,7 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     let btn_update = update_lfm_view.clone();
     let btn_status = lfm_status_lbl.clone();
     let btn_action = lfm_btn.clone();
+    let expander_for_connect = api_expander.clone();
 
     lfm_btn.connect_clicked(move |_| {
         let snap = btn_state.snapshot();
@@ -422,8 +700,29 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
             return;
         }
 
+        if snap.lastfm_api_key().trim().is_empty() {
+            btn_status.set_text(i18n::pick(
+                "Configure your Last.fm API Key below first.",
+                "Configure sua API Key da Last.fm abaixo primeiro.",
+            ));
+            expander_for_connect.set_expanded(true);
+            return;
+        }
+
         if let Some(token) = btn_token.borrow().clone() {
-            btn_status.set_text("Verifying authorization…");
+            if snap.lastfm_api_secret().trim().is_empty() {
+                btn_status.set_text(i18n::pick(
+                    "Configure your Last.fm Shared Secret below first.",
+                    "Configure seu Shared Secret da Last.fm abaixo primeiro.",
+                ));
+                expander_for_connect.set_expanded(true);
+                return;
+            }
+
+            btn_status.set_text(i18n::pick(
+                "Verifying authorization…",
+                "Verificando autorização…",
+            ));
             btn_action.set_sensitive(false);
             let api_key = snap.lastfm_api_key().to_string();
             let api_secret = snap.lastfm_api_secret().to_string();
@@ -447,15 +746,24 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
                         update_cb();
                     }
                     Ok(Err(err)) => {
-                        status_cb.set_text(&format!("Authorization pending: {err}"));
+                        status_cb.set_text(&match i18n::current() {
+                            i18n::Language::En => format!("Authorization pending: {err}"),
+                            i18n::Language::PtBr => format!("Autorização pendente: {err}"),
+                        });
                     }
                     Err(_) => {
-                        status_cb.set_text("Network thread error.");
+                        status_cb.set_text(i18n::pick(
+                            "Network thread error.",
+                            "Erro na thread de rede.",
+                        ));
                     }
                 }
             });
         } else {
-            btn_status.set_text("Requesting Last.fm authorization token…");
+            btn_status.set_text(i18n::pick(
+                "Requesting Last.fm authorization token…",
+                "Solicitando token de autorização da Last.fm…",
+            ));
             btn_action.set_sensitive(false);
             let api_key = snap.lastfm_api_key().to_string();
             let update_cb = btn_update.clone();
@@ -483,37 +791,66 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
                         update_cb();
                     }
                     Ok(Err(err)) => {
-                        status_cb.set_text(&format!("Connection error: {err}"));
+                        status_cb.set_text(&match i18n::current() {
+                            i18n::Language::En => format!("Connection error: {err}"),
+                            i18n::Language::PtBr => format!("Erro de conexão: {err}"),
+                        });
                     }
                     Err(_) => {
-                        status_cb.set_text("Network thread error.");
+                        status_cb.set_text(i18n::pick(
+                            "Network thread error.",
+                            "Erro na thread de rede.",
+                        ));
                     }
                 }
             });
         }
     });
 
-    let api_expander = gtk::Expander::new(Some("Custom API Credentials (Optional)"));
-    api_expander.set_margin_top(4);
     let api_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
     api_box.set_margin_top(4);
     api_box.set_margin_bottom(4);
 
     let key_entry = gtk::Entry::new();
-    key_entry.set_placeholder_text(Some("Custom Last.fm API Key (leave empty for default)"));
+    {
+        let ke = key_entry.downgrade();
+        i18n::connect(&key_entry, move |l| {
+            if let Some(e) = ke.upgrade() {
+                e.set_placeholder_text(Some(i18n::pick_for(
+                    l,
+                    "Custom Last.fm API Key (leave empty for default)",
+                    "API Key personalizada da Last.fm (vazio usa padrão)",
+                )));
+            }
+        });
+    }
     if let Some(k) = catalog.state.snapshot().lastfm_api_key.as_deref() {
         key_entry.set_text(k);
     }
     api_box.append(&key_entry);
 
     let sec_entry = gtk::PasswordEntry::new();
-    sec_entry.set_placeholder_text(Some("Custom Shared Secret (leave empty for default)"));
+    {
+        let se = sec_entry.downgrade();
+        i18n::connect(&sec_entry, move |l| {
+            if let Some(e) = se.upgrade() {
+                e.set_placeholder_text(Some(i18n::pick_for(
+                    l,
+                    "Custom Shared Secret (leave empty for default)",
+                    "Shared Secret personalizado (vazio usa padrão)",
+                )));
+            }
+        });
+    }
     if let Some(s) = catalog.state.snapshot().lastfm_api_secret.as_deref() {
         sec_entry.set_text(s);
     }
     api_box.append(&sec_entry);
 
-    let save_api_btn = gtk::Button::with_label("Save API Keys");
+    let save_api_btn = gtk::Button::new();
+    i18n::bind_button_label(&save_api_btn, |l| {
+        i18n::pick_for(l, "Save API Keys", "Salvar Chaves de API")
+    });
     save_api_btn.add_css_class("folder-button");
     save_api_btn.set_halign(gtk::Align::Start);
 
@@ -587,7 +924,13 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
             let remove = gtk::Button::from_icon_name("user-trash-symbolic");
             remove.set_widget_name("folder-remove");
             remove.add_css_class("folder-button");
-            remove.set_tooltip_text(Some("Remove folder from library"));
+            i18n::bind_tooltip(&remove, |l| {
+                i18n::pick_for(
+                    l,
+                    "Remove folder from library",
+                    "Remover pasta da biblioteca",
+                )
+            });
             remove.set_valign(gtk::Align::Center);
             let weak = weak_catalog.clone();
             remove.connect_clicked(move |_| {
@@ -614,6 +957,15 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     };
     render(catalog);
     catalog.connect(&window, render);
+    {
+        let weak_cat_i18n = Rc::downgrade(catalog);
+        let weak_status_i18n = status.downgrade();
+        i18n::connect(&status, move |_| {
+            if let (Some(cat), Some(st)) = (weak_cat_i18n.upgrade(), weak_status_i18n.upgrade()) {
+                st.set_text(&cat.summary());
+            }
+        });
+    }
     let update_catalog = catalog.clone();
     refresh.connect_clicked(move |_| update_catalog.refresh());
     let weak_window = window.downgrade();
@@ -627,7 +979,10 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
         let weak_error = weak_error.clone();
         let weak_window = window.downgrade();
         gtk::FileDialog::builder()
-            .title("Add music folder")
+            .title(i18n::pick(
+                "Add music folder",
+                "Adicionar pasta de músicas",
+            ))
             .build()
             .select_folder(
                 Some(&window),
@@ -639,7 +994,10 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
                     let result = match result {
                         Ok(file) => file
                             .path()
-                            .ok_or_else(|| "Choose a local folder.".to_string())
+                            .ok_or_else(|| {
+                                i18n::pick("Choose a local folder.", "Escolha uma pasta local.")
+                                    .to_string()
+                            })
                             .and_then(|path| catalog.add_root(path)),
                         Err(error)
                             if error.matches(gtk::DialogError::Dismissed)

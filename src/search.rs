@@ -1,16 +1,23 @@
+use crate::library::AlbumMetadata;
+use gtk::glib;
+use gtk::prelude::*;
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
-use crate::library::AlbumMetadata;
 
 pub type SearchCallback = Rc<dyn Fn()>;
+
+struct Listener {
+    anchor: Option<glib::WeakRef<gtk::Widget>>,
+    callback: SearchCallback,
+}
 
 /// Hub reativo para gerenciar a consulta de busca em tempo real entre diferentes
 /// visões da interface gráfica.
 #[derive(Clone, Default)]
 pub struct SearchHub {
     query: Rc<RefCell<String>>,
-    callbacks: Rc<RefCell<Vec<SearchCallback>>>,
+    callbacks: Rc<RefCell<Vec<Listener>>>,
 }
 
 impl SearchHub {
@@ -24,13 +31,41 @@ impl SearchHub {
 
     pub fn set_query(&self, q: &str) {
         *self.query.borrow_mut() = q.to_string();
-        for cb in self.callbacks.borrow().iter() {
+        let active: Vec<SearchCallback> = {
+            let mut list = self.callbacks.borrow_mut();
+            list.retain(|entry| {
+                entry
+                    .anchor
+                    .as_ref()
+                    .is_none_or(|weak| weak.upgrade().is_some())
+            });
+            list.iter().map(|entry| entry.callback.clone()).collect()
+        };
+        for cb in active {
             cb();
         }
     }
 
+    #[allow(dead_code)]
     pub fn on_query_changed<F: Fn() + 'static>(&self, f: F) {
-        self.callbacks.borrow_mut().push(Rc::new(f));
+        self.callbacks.borrow_mut().push(Listener {
+            anchor: None,
+            callback: Rc::new(f),
+        });
+    }
+
+    pub fn connect<F: Fn() + 'static>(&self, anchor: &impl IsA<gtk::Widget>, f: F) {
+        let mut list = self.callbacks.borrow_mut();
+        list.retain(|entry| {
+            entry
+                .anchor
+                .as_ref()
+                .is_none_or(|weak| weak.upgrade().is_some())
+        });
+        list.push(Listener {
+            anchor: Some(anchor.as_ref().downgrade()),
+            callback: Rc::new(f),
+        });
     }
 }
 
@@ -200,5 +235,28 @@ mod tests {
         assert!(album_matches(&album, "2016"));
         assert!(album_matches(&album, "no heart"));
         assert!(!album_matches(&album, "metallica"));
+    }
+
+    #[test]
+    #[ignore = "Requer sessão gráfica; verifica remoção automática de callbacks quando widgets são destruídos"]
+    fn search_hub_prunes_dead_widget_anchors() {
+        gtk::init().unwrap();
+        let hub = SearchHub::new();
+        let alive = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let dead = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let hits = Rc::new(std::cell::Cell::new(0));
+        let hits_alive = hits.clone();
+        hub.connect(&alive, move || hits_alive.set(hits_alive.get() + 1));
+        let hits_dead = hits.clone();
+        hub.connect(&dead, move || hits_dead.set(hits_dead.get() + 10));
+
+        hub.set_query("a");
+        assert_eq!(hits.get(), 11);
+        assert_eq!(hub.callbacks.borrow().len(), 2);
+
+        drop(dead);
+        hub.set_query("b");
+        assert_eq!(hits.get(), 12);
+        assert_eq!(hub.callbacks.borrow().len(), 1);
     }
 }

@@ -13,6 +13,8 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(12);
 fn http_agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(HTTP_TIMEOUT))
+        .http_status_as_error(false)
+        .user_agent("VinylPlayer/0.1.7 (Linux; x86_64; +https://github.com/dznass-cmd/VinylPlayer)")
         .build()
         .into()
 }
@@ -78,6 +80,9 @@ pub mod urlencoding {
 
 /// Obtém um token de autorização temporário via `auth.getToken`.
 pub fn request_token(api_key: &str) -> Result<String, String> {
+    if api_key.trim().is_empty() {
+        return Err("API Key não configurada".to_string());
+    }
     let query = encode_form(&[
         ("method", "auth.getToken"),
         ("api_key", api_key),
@@ -88,12 +93,21 @@ pub fn request_token(api_key: &str) -> Result<String, String> {
         .get(&url)
         .call()
         .map_err(|e| format!("Falha de conexão com Last.fm: {e}"))?;
+    let status = res.status();
     let body_str = res
         .body_mut()
         .read_to_string()
         .map_err(|e| format!("Falha ao ler resposta da Last.fm: {e}"))?;
-    let val: serde_json::Value = serde_json::from_str(&body_str)
-        .map_err(|e| format!("Resposta JSON inválida da Last.fm: {e}"))?;
+    let val: serde_json::Value = serde_json::from_str(&body_str).unwrap_or(serde_json::Value::Null);
+
+    if let Some(err) = val.get("error").and_then(|e| e.as_i64()) {
+        let msg = val.get("message").and_then(|m| m.as_str()).unwrap_or("Erro desconhecido");
+        return Err(format!("Erro {err}: {msg}"));
+    }
+
+    if !status.is_success() {
+        return Err(format!("HTTP status {status}"));
+    }
 
     if let Some(token) = val.get("token").and_then(|t| t.as_str()) {
         Ok(token.to_string())
@@ -111,6 +125,9 @@ pub fn authorization_url(api_key: &str, token: &str) -> String {
 
 /// Obtém a chave de sessão permanente (`sk`) e nome de usuário a partir do token autorizado.
 pub fn fetch_session(api_key: &str, api_secret: &str, token: &str) -> Result<(String, String), String> {
+    if api_key.trim().is_empty() || api_secret.trim().is_empty() {
+        return Err("API Key ou Secret não configurados".to_string());
+    }
     let params = [
         ("api_key", api_key),
         ("method", "auth.getSession"),
@@ -130,16 +147,25 @@ pub fn fetch_session(api_key: &str, api_secret: &str, token: &str) -> Result<(St
         .get(&url)
         .call()
         .map_err(|e| format!("Falha ao obter sessão do Last.fm: {e}"))?;
+    let status = res.status();
     let body_str = res
         .body_mut()
         .read_to_string()
         .map_err(|e| format!("Falha ao ler resposta da sessão: {e}"))?;
-    let val: serde_json::Value = serde_json::from_str(&body_str)
-        .map_err(|e| format!("Resposta JSON inválida: {e}"))?;
+    let val: serde_json::Value = serde_json::from_str(&body_str).unwrap_or(serde_json::Value::Null);
+
+    if let Some(err) = val.get("error").and_then(|e| e.as_i64()) {
+        let msg = val.get("message").and_then(|m| m.as_str()).unwrap_or("Autorização pendente");
+        return Err(format!("Erro {err}: {msg}"));
+    }
+
+    if !status.is_success() {
+        return Err(format!("HTTP status {status}"));
+    }
 
     if let Some(session) = val.get("session") {
-        let sk = session.get("key").and_then(|k| k.as_str()).ok_or("Chave de sessão ausente")?;
-        let name = session.get("name").and_then(|n| n.as_str()).ok_or("Nome de usuário ausente")?;
+        let sk = session.get("key").and_then(|k| k.as_str()).ok_or_else(|| "Chave de sessão ausente".to_string())?;
+        let name = session.get("name").and_then(|n| n.as_str()).ok_or_else(|| "Nome de usuário ausente".to_string())?;
         Ok((sk.to_string(), name.to_string()))
     } else {
         let err_code = val.get("error").and_then(|e| e.as_i64()).unwrap_or(0);
@@ -158,6 +184,9 @@ pub fn update_now_playing(
     album: Option<&str>,
     duration_sec: Option<u64>,
 ) -> Result<(), String> {
+    if api_key.trim().is_empty() || api_secret.trim().is_empty() || session_key.trim().is_empty() {
+        return Err("Credenciais da Last.fm não configuradas".to_string());
+    }
     let dur_str;
     let mut params: Vec<(&str, &str)> = vec![
         ("method", "track.updateNowPlaying"),
@@ -186,16 +215,20 @@ pub fn update_now_playing(
         .send(body.as_bytes())
         .map_err(|e| format!("Erro ao enviar Now Playing: {e}"))?;
 
+    let status = res.status();
     let body_str = res
         .body_mut()
         .read_to_string()
         .map_err(|e| format!("Erro ao ler resposta Now Playing: {e}"))?;
-    let val: serde_json::Value = serde_json::from_str(&body_str)
-        .map_err(|e| format!("Resposta inválida Now Playing: {e}"))?;
+    let val: serde_json::Value = serde_json::from_str(&body_str).unwrap_or(serde_json::Value::Null);
 
     if let Some(err) = val.get("error") {
         let msg = val.get("message").and_then(|m| m.as_str()).unwrap_or("Falha no Now Playing");
         return Err(format!("Erro {err}: {msg}"));
+    }
+
+    if !status.is_success() {
+        return Err(format!("HTTP status {status}"));
     }
 
     Ok(())
@@ -217,6 +250,9 @@ pub fn scrobble_track(
     session_key: &str,
     payload: &ScrobblePayload<'_>,
 ) -> Result<(), String> {
+    if api_key.trim().is_empty() || api_secret.trim().is_empty() || session_key.trim().is_empty() {
+        return Err("Credenciais da Last.fm não configuradas".to_string());
+    }
     let ts_str = payload.timestamp.to_string();
     let dur_str;
     let mut params: Vec<(&str, &str)> = vec![
@@ -247,16 +283,20 @@ pub fn scrobble_track(
         .send(body.as_bytes())
         .map_err(|e| format!("Erro ao enviar Scrobble: {e}"))?;
 
+    let status = res.status();
     let body_str = res
         .body_mut()
         .read_to_string()
         .map_err(|e| format!("Erro ao ler resposta Scrobble: {e}"))?;
-    let val: serde_json::Value = serde_json::from_str(&body_str)
-        .map_err(|e| format!("Resposta inválida Scrobble: {e}"))?;
+    let val: serde_json::Value = serde_json::from_str(&body_str).unwrap_or(serde_json::Value::Null);
 
     if let Some(err) = val.get("error") {
         let msg = val.get("message").and_then(|m| m.as_str()).unwrap_or("Falha no Scrobble");
         return Err(format!("Erro {err}: {msg}"));
+    }
+
+    if !status.is_success() {
+        return Err(format!("HTTP status {status}"));
     }
 
     Ok(())
@@ -298,5 +338,29 @@ mod tests {
             url,
             "https://www.last.fm/api/auth/?api_key=key+with+space&token=tok%26123"
         );
+    }
+
+    #[test]
+    fn test_empty_api_key_validations() {
+        assert!(request_token("").is_err());
+        assert!(request_token("   ").is_err());
+
+        assert!(fetch_session("", "secret", "token").is_err());
+        assert!(fetch_session("key", "", "token").is_err());
+
+        assert!(update_now_playing("", "secret", "sk", "art", "trk", None, None).is_err());
+        assert!(update_now_playing("key", "", "sk", "art", "trk", None, None).is_err());
+        assert!(update_now_playing("key", "secret", "", "art", "trk", None, None).is_err());
+
+        let payload = ScrobblePayload {
+            artist: "Pink Floyd",
+            track: "Time",
+            album: None,
+            timestamp: 1234567890,
+            duration_sec: Some(400),
+        };
+        assert!(scrobble_track("", "secret", "sk", &payload).is_err());
+        assert!(scrobble_track("key", "", "sk", &payload).is_err());
+        assert!(scrobble_track("key", "secret", "", &payload).is_err());
     }
 }

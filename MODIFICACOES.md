@@ -1,6 +1,120 @@
 # Alterações do VinylPlayer
 
-Registro atualizado em 17/11/2026.
+Registro atualizado em 21/11/2026.
+
+## Release v0.2.0 — Milestone Release: Sidebar Hotkeys & Transport Bar Volume Scroll — 21/11/2026
+
+- **Instant Sidebar Tab Hotkeys (`Alt+1..4`) & Tooltips (`src/main.rs`):**
+  - Added fast desktop keyboard shortcuts to switch collection views instantly: `Alt+1` for Turntable (Toca-Discos), `Alt+2` for Tracks (Faixas), `Alt+3` for Albums (Álbuns), and `Alt+4` for Playlists.
+  - Bound dynamic localized tooltips to each sidebar navigation button displaying the corresponding accelerator (`"Turntable · Alt+1"` / `"Toca-Discos · Alt+1"`).
+- **Transport Bar Mouse Wheel Volume Control (`src/main.rs`):**
+  - Attached vertical scroll controller (`gtk::EventControllerScroll`) to the bottom transport bar volume section, enabling smooth 3% volume adjustments and immediate on-screen HUD popups simply by scrolling the wheel over the speaker button or slider.
+
+## Release v0.1.9 — Interactive Vinyl Platter, Tactile Cursors & Navigation Shortcuts — 21/11/2026
+
+- **Interactive Vinyl Platter Play/Pause & Tactile Hover Cursor (`src/main.rs`):**
+  - Enabled clicking anywhere on the rotating/stopped vinyl record platter to toggle Play/Pause directly on the turntable deck with synchronized needle drop acoustics.
+  - Added real-time hover motion tracking (`gtk::EventControllerMotion`) setting pointer cursor when hovering over interactive deck zones (33/45 RPM buttons, stylus target light tower, pitch fader, and vinyl disc platter).
+- **Audio Seeking & Media Navigation Keyboard Shortcuts (`src/main.rs`):**
+  - Added `Shift + Right Arrow` (+5s jump) and `Shift + Left Arrow` (-5s jump) for quick keyboard scrubbing through tracks.
+  - Added `Page_Down` (next track), `Page_Up` (previous track), and `Home` (rewind to track start) keyboard bindings.
+- **Defensive Unwraps & Null Parent Directory Guards (`src/library.rs`, `src/main.rs`):**
+  - Replaced risky `.unwrap()` on `topbar_widget.downcast` with safe pattern matching.
+  - Guarded metadata cache path in `library.rs` ensuring `cache.parent()` exists before directory creation.
+
+## Release v0.1.8 — Smooth Seekbar Dragging & Playlist Deletion Safety — 21/11/2026
+
+- **Smooth Seekbar Dragging & Real-Time Position Feedback (`src/main.rs`):**
+  - Eliminated timeline slider stutter and position jitter caused by the 250ms background transport tick loop overwriting the slider value while being dragged with the mouse.
+  - Implemented `is_seeking` capture gesture controller (`gtk::GestureDrag`) on the progress scale, pausing background position overwrite during drag gestures and committing the precise target seek position cleanly on release (`drag_end`).
+  - Added live time label updating during seek drag gestures (`seek.connect_value_changed`), providing immediate visual feedback of the target timestamp before dropping the needle.
+- **Destructive Confirmation Guard on Playlist Deletion (`src/playlist_view.rs`):**
+  - Protected user playlists from accidental loss by wrapping the delete button (`del_btn`) on playlist cards in a native Libadwaita modal confirmation dialog (`adw::MessageDialog`).
+  - Styled the action button with destructive appearance (`adw::ResponseAppearance::Destructive`) with default safe focus on "Cancel", localized dynamically for English and Brazilian Portuguese.
+
+## Release v0.1.7 — Last.fm Scrobbler Hardening & API Credential Validation — 21/11/2026
+
+- **Last.fm Scrobbler HTTP 400 & 403 Hardening (`src/scrobbler.rs`, `src/state.rs`):**
+  - Configured custom desktop User-Agent header (`VinylPlayer/0.1.7 ...`) on the HTTP client to prevent Cloudflare edge blocking and HTTP 403 Forbidden responses.
+  - Switched `ureq` to non-throwing status inspection (`http_status_as_error(false)`), allowing parsing of Last.fm API JSON error codes (`val.get("error")`) with fallback HTTP status reporting.
+  - Added strict credential validation across `request_token`, `fetch_session`, `update_now_playing`, and `scrobble_track`, returning clear errors when API Key or Secret are unconfigured.
+  - Updated `is_lastfm_authenticated()` in `src/state.rs` to require non-empty API credentials in addition to session key, preventing empty HTTP 400 background requests during playback.
+  - Added automated unit tests `test_empty_api_key_validations` verifying error handling for unconfigured credentials.
+- **Last.fm Configuration UX & Expander Guard (`src/library_settings.rs`):**
+  - Guarded the "Connect to Last.fm" button to detect empty API keys, immediately prompting the user with `"Configure your Last.fm API Key below first."` / `"Configure sua API Key da Last.fm abaixo primeiro."` and automatically expanding the "Custom API Credentials" section.
+
+## Release v0.1.6 — Shortcuts, Multi-File Open & Dynamic Modal i18n — 21/11/2026
+
+- **Multi-File Selection & Formatted Audio Filters (`src/main.rs`):**
+  - Upgraded the topbar "Open track" dialog from single-file selection to `open_multiple_future` with automatic sequential enqueuing (`engine.play_files(&paths, 0)`), letting users select entire track lists directly from file managers without losing selection order.
+  - Added formatted GTK file filters distinguishing supported audio formats (`*.flac`, `*.mp3`, `*.ogg`, `*.wav`, `*.m4a`, `*.opus`, `*.aac`, etc.) from generic all-file mode.
+- **Global `Ctrl+O` Track Open Keyboard Shortcut (`src/main.rs`):**
+  - Registered `win.open-track` action with `<Control>o` accelerator and responsive tooltip (`"Open track · Ctrl+O"` / `"Abrir faixa · Ctrl+O"`).
+- **Fully Reactive Live i18n in Support & Donate Dialog (`src/donate.rs`):**
+  - Converted all static label and button strings across the Support/Donate modal into reactive `i18n::bind_label`, `i18n::bind_button_label`, and `i18n::bind_tooltip` bindings anchored by `i18n::connect(&window, ...)`, so changing languages in Settings immediately updates the Support window without requiring reopening.
+
+## Release v0.1.5 — Bug Fixes, UI Hardening & MPRIS Conformance — 21/11/2026
+
+- **Playback Rate Preservation on Timeline Seek (`src/audio.rs`):**
+  - Fixed audio pitch being silently reset to 1.0x when seeking along the timeline track scale or through MPRIS `SetPosition` / `Seek`.
+  - Replaced hardcoded `playbin.seek_simple` (which defaults `rate` to `1.0` in GStreamer) with `gst::event::Seek::new(self.rate(), ...)` and graceful fallback, preserving any active pitch fader adjustment (e.g. $+5\%$ rotation) seamlessly during seeks.
+  - Added unit test `seek_us_preserves_playback_rate` verifying that seeking during active playback maintains custom pitch rate.
+- **Elimination of GTK UI Unwraps in Queue View (`src/queue_view.rs`):**
+  - Replaced 9 fragile chained `.unwrap()` calls in `update_row`, `setup_row`, and `sync_rows` with safe pattern matching guards (`let Some(...) else { return; }` and `downcast_ref`), preventing desktop crashes during fast queue mutations, track removals, and widget recycling.
+  - Localized queue track play accessibility labels (`"Play"` / `"Tocar"`).
+- **MPRIS v2 Spec Conformance, Real Quit & Live Rate Signals (`src/mpris.rs`, `src/main.rs`):**
+  - Implemented real `Quit()` invocation closing all windows and cleanly terminating the application (`can_quit: true`), allowing desktop widgets, keybindings, and CLI tools like `playerctl -p vinylplayer quit` to exit cleanly.
+  - Added live 250ms polling and emission for `Rate` property changed signals so external controllers track pitch fader changes.
+  - Complied with MPRIS v2 specification by returning `/org/mpris/MediaPlayer2/TrackList/NoTrack` when no audio URI is active instead of `/org/mpris/MediaPlayer2/track/0`.
+  - Dynamically calculated `CanGoNext` and `CanGoPrevious` based on actual queue position, repeat mode, and shuffle state rather than static `true`.
+- **Audio Tag Codec & Artist Prioritization (`src/audio.rs`):**
+  - Prevented GStreamer's `refresh_stream_info` from overwriting valid tag codecs (e.g. `FLAC`, `MP3`) with generic `audio/x-raw`.
+  - Added fallback tag resolution for `AlbumArtist` and `Performer` when standard `Artist` tags are omitted.
+- **Non-Panicking Album Indexing Worker Join (`src/library.rs`):**
+  - Replaced `.expect("indexador de álbuns")` with `.filter_map(|w| w.join().ok()).flatten()` so corrupted files or background thread faults do not abort the UI process.
+- **Atomic Needle Drop Cache Generation (`src/needle_drop.rs`):**
+  - Hardened needle drop WAV cache generation using temporary unique files and atomic rename to prevent corruption or race conditions on rapid triggers.
+- **Resilient File Open CLI Window Activation (`src/file_open.rs`):**
+  - Guarded against `None` active window during CLI or background D-Bus activation, ensuring window presence before dispatching audio playback.
+- **Defensive Action Initialization (`src/main.rs`):**
+  - Replaced `.find(...).unwrap()` on overview nav button action with safe pattern matching.
+- **Percent-Decoded M3U Localhost URI Fallback (`src/playlist.rs`):**
+  - Added custom percent-decoding helper for `file://localhost/` and `file://` fallback parsing in M3U playlists, ensuring paths with `%20` and accented characters resolve accurately.
+
+## Full Theme Coverage, Gapless Playback, Controls & Bilingual i18n — 18/11/2026
+
+- **Real Gapless Playback via GStreamer `playbin3` (`src/audio.rs`):**
+  - Connected `playbin3`'s `about-to-finish` signal cleanly using `WeakRef` + non-blocking `queue.try_lock()` to pre-queue the next track URI seamlessly across linear playback, `Shuffle`, `RepeatMode::All`, and `RepeatMode::Track` without dropping through `Ready`.
+  - Extracted shared `next_auto_index_from`, `apply_track_metadata`, `apply_current_rate`, and `commit_pending_gapless` helpers so `StreamStart` commits queue selection, metadata, cover art, `track_seq`, and pitch rate, `Error` commits pending failure context accurately, manual track changes/removals/stop discard stale pending transitions, and `advance_after_eos` acts as a clean fallback.
+  - Added automated unit test `gapless_about_to_finish_transitions_without_eos` verifying seamless WAV chaining without intermediate `Eos`.
+- **Mute Toggle, Pitch MPRIS Sync & Quick Reset (`src/main.rs`):**
+  - Replaced the static speaker icon in the bottom transport bar with a clickable reactive mute button (`audio-volume-muted-symbolic`, `low`, `medium`, `high`), `pre_mute_volume` restoration memory, `win.toggle-mute` action, and `M` shortcut.
+  - Added double-click reset (`0.0%` Quartz Lock) on the turntable pitch fader and bidirectional 250ms synchronization when external MPRIS `SetRate` changes `audio.rate()`.
+- **Tag-Aware Track Notifications & Settings Toggle (`src/state.rs`, `src/library_settings.rs`, `src/main.rs`):**
+  - Added persistent `notifications: bool` preference (default `true`) and toggle checkbox in Settings.
+  - Updated playback notifications to wait up to 450 ms or until GStreamer `Tag` metadata populates both `artist` and `title` (plus cover art), and to trigger reliably across automatic EOS and gapless track transitions without duplicating on pause/resume.
+- **Keyboard Shortcuts & Library-Wide Search Enter (`src/main.rs`, `src/library_settings.rs`):**
+  - Added `Ctrl+F` (`win.focus-search`), `Ctrl+,` (`win.library-settings`), `M` (mute), `S` (shuffle), `R` (repeat), and `Esc` to close the Settings window.
+  - Updated header `SearchEntry` activation (`Enter`) to search and play matching tracks from the indexed `Catalog` across the entire library using `search::track_matches`, falling back to active queue search when needed.
+- **Consistent Bilingual EN / PT-BR Localization (`src/i18n.rs`, `src/state.rs`, all UI modules):**
+  - Created `src/i18n.rs` with `Language::{En, PtBr}`, `LC_ALL`/`LC_MESSAGES`/`LANG` system detection, persistent `language: Option<String>` preference in `AppState`, `WeakRef`-anchored reactive widget bindings, and live language switching controls in Settings (`English` / `Português (Brasil)`).
+  - Unified mixed English / Portuguese strings across `main.rs`, `library_settings.rs`, `queue_view.rs`, `playback_error.rs`, `playlist_view.rs`, `file_open.rs`, `donate.rs`, `audio.rs`, and `theme.rs`.
+- **Complete Theme CSS Override Coverage (`src/theme.rs`):**
+  - Added theme overrides for `.control-button.active` / `:hover`, `.listening-format`, `.badge-hires`, `.queue-search:focus-within`, `.queue-clear` / `:hover`, `.search-box:focus-within`, `.enqueue-menu > button:hover`, `.folder-button:hover`, and `button:focus-visible` so switching away from *Amber Gold* updates all accent-colored controls consistently.
+- **MPRIS v2 Specification Compliance & Live Signals (`src/mpris.rs`, `src/main.rs`):**
+  - Exported `/org/mpris/MediaPlayer2` before claiming `org.mpris.MediaPlayer2.VinylPlayer` to eliminate the D-Bus `NameOwnerChanged` race window.
+  - Added `DesktopEntry` (`"io.github.vinylplayer"`), `Raise()` (safely dispatched onto the GTK main thread via `glib::MainContext::default().invoke`), `Quit()`, and full `SupportedMimeTypes`.
+  - Added `CanSeek`, `Seek(offset)`, `Volume` (get/set), `Rate` / `MinimumRate` / `MaximumRate`, `track_sequence()`-based `mpris:trackid`, `duration_us()` fallback in `Metadata`, `OpenUri` local-file validation, and 250ms `PropertiesChanged` signal emission (`PlaybackStatus`, `Metadata`, `LoopStatus`, `Shuffle`, `Volume`).
+- **Pause Guard When Stopped (`src/audio.rs`):**
+  - Prevented `AudioEngine::pause()` from transitioning `PlaybackState::Stopped` into `PlaybackState::Paused` when no stream is playing.
+- **SearchHub Anchor Lifecycle & Filter Restoration (`src/search.rs`, `src/main.rs`):**
+  - Added `SearchHub::connect` anchored by `glib::WeakRef<gtk::Widget>` so callbacks belonging to replaced `"tracks"` and `"albums"` views are automatically pruned instead of leaking on library refreshes.
+  - Preserved active search queries by eagerly populating track and album list views when rebuilt with a non-empty search filter.
+- **Wayland Portal Modal Anchoring & CSS Provider Deduplication (`src/main.rs`, `src/playlist_view.rs`):**
+  - Passed the parent `gtk::Window` to all `GtkFileDialog` async calls (`Open track`, `Import M3U`, `Add Tracks...`, `Export...`) for proper Wayland modal attachment.
+  - Bounded `seek.connect_change_value` to the scale adjustment range and deduplicated `install_css()` via `thread_local!` `BASE_CSS_PROVIDER` with safe `gdk::Display::default()` handling.
+- **Safe Programmatic Needle Drop Pipeline (`src/needle_drop.rs`):**
+  - Replaced `gst::parse::launch` string interpolation with `gst::ElementFactory::make` (`filesrc` property binding), added a total 900ms wall-clock deadline, and guarded overlapping triggers with `NEEDLE_DROP_SEQ`.
 
 ## Bug Fixes, Concurrency Hardening & Packaging Sync — 17/11/2026
 

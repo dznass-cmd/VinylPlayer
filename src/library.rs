@@ -154,10 +154,12 @@ pub fn read_order(path: &Path) -> TrackTags {
     let tags = String::from_utf8_lossy(&output.stdout);
     let parsed = parse_tags(&tags);
     if let Some(stamp) = stamp {
-        if std::fs::create_dir_all(cache.parent().unwrap()).is_ok() {
-            let temporary = cache.with_extension(format!("{}.tmp", std::process::id()));
-            if std::fs::write(&temporary, format!("{stamp}\n{tags}")).is_ok() {
-                let _ = std::fs::rename(temporary, cache);
+        if let Some(parent) = cache.parent() {
+            if std::fs::create_dir_all(parent).is_ok() {
+                let temporary = cache.with_extension(format!("{}.tmp", std::process::id()));
+                if std::fs::write(&temporary, format!("{stamp}\n{tags}")).is_ok() {
+                    let _ = std::fs::rename(temporary, cache);
+                }
             }
         }
     }
@@ -338,7 +340,8 @@ pub fn load_album_metadata(paths: Vec<PathBuf>) -> Vec<AlbumMetadata> {
             .collect();
         workers
             .into_iter()
-            .flat_map(|worker| worker.join().expect("indexador de álbuns"))
+            .filter_map(|worker| worker.join().ok())
+            .flatten()
             .collect()
     });
     sort_albums(&mut albums, AlbumSortMode::TitleAsc);

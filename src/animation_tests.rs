@@ -1270,13 +1270,17 @@ use gtk::cairo;
     #[ignore = "Requer sessão gráfica; gera a prévia visual em /tmp"]
     fn render_professional_preview() {
         gtk::init().unwrap();
+        crate::i18n::set_current(crate::i18n::Language::En);
         let app = Application::builder()
             .application_id("io.github.vinylplayer.preview")
             .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
             .build();
         app.register(None::<&gtk::gio::Cancellable>).unwrap();
         let test_config = state::TestConfig::new();
+        std::fs::write(test_config.path(), r#"{"language": "en"}"#).unwrap();
+        crate::i18n::set_current(crate::i18n::Language::En);
         let audio = build_ui_with_state(&app, state::StateManager::with_path(test_config.path()));
+        crate::i18n::set_current(crate::i18n::Language::En);
         let silent_sink = gstreamer::ElementFactory::make("fakesink")
             .property("sync", true)
             .build()
@@ -1336,6 +1340,11 @@ use gtk::cairo;
             main_loop.run();
             assert_eq!(album_views.visible_child_name().as_deref(), Some(view));
             save_preview(&window, filename);
+            if view == "covers" {
+                save_preview(&window, "docs/albums-grid.png");
+            } else {
+                save_preview(&window, "docs/albums-list.png");
+            }
         }
         album_views.set_visible_child_name("covers");
         let grid_widget = album_views
@@ -1373,6 +1382,7 @@ use gtk::cairo;
         });
         main_loop.run();
         save_preview(&window, "/tmp/vinylplayer-album-detail.png");
+        save_preview(&window, "docs/album-detail.png");
         let detail = album_navigation.child_by_name("detail").unwrap();
         assert_eq!(
             audio.state(),
@@ -1422,6 +1432,8 @@ use gtk::cairo;
         pages.set_visible_child_name("overview");
         settle(&main_loop);
         save_preview(&window, "/tmp/vinylplayer-turntable-playing.png");
+        save_preview(&window, "docs/turntable-playing.png");
+        save_preview(&window, "docs/toca-discos-rpm.png");
         pages.set_visible_child_name("albums");
         album_navigation.set_visible_child_name("browse");
         settle(&main_loop);
@@ -1455,6 +1467,52 @@ use gtk::cairo;
             Some("browse")
         );
         assert_eq!(album_views.visible_child_name().as_deref(), Some("covers"));
+
+        pages.set_visible_child_name("overview");
+        settle(&main_loop);
+
+        // Captura o painel da fila de reprodução (Playback Queue)
+        gtk::prelude::WidgetExt::activate_action(&window, "win.toggle-queue", None).unwrap();
+        settle(&main_loop);
+        save_preview(&window, "docs/playback-queue.png");
+        save_preview(&window, "docs/fila-reproducao.png");
+        gtk::prelude::WidgetExt::activate_action(&window, "win.toggle-queue", None).unwrap();
+        settle(&main_loop);
+
+        // Captura a página de playlists
+        pages.set_visible_child_name("playlists");
+        settle(&main_loop);
+        save_preview(&window, "docs/playlists.png");
+        pages.set_visible_child_name("overview");
+        settle(&main_loop);
+
+        // Captura a janela de configurações (Settings)
+        gtk::prelude::WidgetExt::activate_action(&window, "win.library-settings", None).unwrap();
+        settle(&main_loop);
+        if let Some(settings_win) = gtk::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::Window>().ok())
+            .find(|w| w != &window && w.is_visible())
+        {
+            save_preview(&settings_win, "docs/settings.png");
+            save_preview(&settings_win, "docs/pastas-biblioteca.png");
+            settings_win.close();
+            settle(&main_loop);
+        }
+
+        // Captura a janela de suporte / doação (Support)
+        gtk::prelude::WidgetExt::activate_action(&window, "win.donate", None).unwrap();
+        settle(&main_loop);
+        if let Some(donate_win) = gtk::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::Window>().ok())
+            .find(|w| w != &window && w.is_visible())
+        {
+            save_preview(&donate_win, "docs/donate.png");
+            donate_win.close();
+            settle(&main_loop);
+        }
+
         window.close();
     }
 

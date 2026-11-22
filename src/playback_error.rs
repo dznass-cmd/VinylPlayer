@@ -55,23 +55,36 @@ impl ErrorPresenter {
         let missing = glib::filename_from_uri(&metadata.uri)
             .ok()
             .is_some_and(|(p, _)| !p.is_file());
+        let lang = crate::i18n::current();
         let reason = if missing {
-            "The file is not available. Check if it was moved or if the disk is connected."
+            crate::i18n::pick_for(
+                lang,
+                "The file is not available. Check if it was moved or if the disk is connected.",
+                "O arquivo não está disponível. Verifique se foi movido ou se o disco está conectado.",
+            )
         } else {
-            "Could not play audio. The file may be corrupted, the format unsupported, or the audio output unavailable."
+            crate::i18n::pick_for(
+                lang,
+                "Could not play audio. The file may be corrupted, the format unsupported, or the audio output unavailable.",
+                "Não foi possível reproduzir o áudio. O arquivo pode estar danificado, o formato não suportado ou a saída de áudio indisponível.",
+            )
         };
         let dialog = libadwaita::MessageDialog::builder()
             .transient_for(&parent)
             .destroy_with_parent(true)
-            .heading("Unable to play this track")
+            .heading(crate::i18n::pick_for(
+                lang,
+                "Unable to play this track",
+                "Não foi possível reproduzir esta faixa",
+            ))
             .body(format!("{}\n\n{reason}", metadata.title))
             .build();
         dialog.set_widget_name("playback-error");
         dialog.add_css_class("playback-error");
         dialog.set_tooltip_text(Some(details));
-        dialog.add_response("close", "Close");
-        dialog.add_response("skip", "Skip track");
-        dialog.add_response("retry", "Try again");
+        dialog.add_response("close", crate::i18n::pick_for(lang, "Close", "Fechar"));
+        dialog.add_response("skip", crate::i18n::pick_for(lang, "Skip track", "Pular faixa"));
+        dialog.add_response("retry", crate::i18n::pick_for(lang, "Try again", "Tentar novamente"));
         dialog.set_close_response("close");
         dialog.set_response_appearance("retry", libadwaita::ResponseAppearance::Suggested);
         let presenter = self.clone();
