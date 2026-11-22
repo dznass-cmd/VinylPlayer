@@ -1,5 +1,5 @@
 pkgname=vinylplayer
-pkgver=0.1.4
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Analog-inspired, lightweight, and native music player for the Linux desktop'
 arch=('x86_64')
