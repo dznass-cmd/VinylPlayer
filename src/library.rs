@@ -320,7 +320,10 @@ pub fn load_album_metadata(paths: Vec<PathBuf>) -> Vec<AlbumMetadata> {
                                         .and_then(|p| p.file_name())
                                         .and_then(|n| n.to_str())
                                         .filter(|n| {
-                                            *n != "music" && *n != "Albums" && *n != "Músicas" && *n != "Tracks"
+                                            *n != "music"
+                                                && *n != "Albums"
+                                                && *n != "Músicas"
+                                                && *n != "Tracks"
                                         })
                                         .unwrap_or("Unknown Artist")
                                         .to_string()

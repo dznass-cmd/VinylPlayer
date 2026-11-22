@@ -1,5 +1,5 @@
 pkgname=vinylplayer
-pkgver=0.2.0
+pkgver=0.2.1
 pkgrel=1
 pkgdesc='Analog-inspired, lightweight, and native music player for the Linux desktop'
 arch=('x86_64')
@@ -12,8 +12,8 @@ optdepends=(
 )
 makedepends=('cargo')
 options=('!lto')
-source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/VinylPlayer-$pkgver.tar.gz")
+sha256sums=('7eaa5b7f55c7711ff84ae6f1cab5a0d39929782f42bd71bb7e59b1ce94ef1a3a')
 
 prepare() {
   cd "VinylPlayer-$pkgver"

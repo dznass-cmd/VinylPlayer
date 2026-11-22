@@ -1,6 +1,14 @@
 # Alterações do VinylPlayer
 
-Registro atualizado em 21/11/2026.
+Registro atualizado em 22/11/2026.
+
+## Release v0.2.1 — Release Integrity & Contributor Readiness — 22/11/2026
+
+- Replaced the unverified bit-perfect claim with an accurate description of GStreamer/PipeWire format negotiation and clarified Hi-Res output limitations.
+- Removed misleading references to embedded Last.fm credentials, made bring-your-own credentials explicit in the bilingual UI, and derived the HTTP User-Agent version from the package metadata.
+- Added continuous integration for formatting, Clippy, tests, and release builds on Ubuntu 24.04.
+- Added contributor, security, issue, and pull-request guidance for public collaboration.
+- Synchronized the Arch Linux package metadata and replaced the skipped source checksum with a verified release-archive SHA-256.
 
 ## Release v0.2.0 — Milestone Release: Sidebar Hotkeys & Transport Bar Volume Scroll — 21/11/2026
 

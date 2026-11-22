@@ -1,5 +1,9 @@
 //! Configuração de pastas e coordenação de uma única leitura em segundo plano.
-use crate::{library_sources, state::StateManager, theme::{self, Theme}};
+use crate::{
+    library_sources,
+    state::StateManager,
+    theme::{self, Theme},
+};
 use gtk::glib;
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -277,7 +281,9 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
     lang_box.set_margin_top(10);
     lang_box.set_margin_bottom(4);
     let lang_title = gtk::Label::new(None);
-    i18n::bind_label(&lang_title, |l| i18n::pick_for(l, "Language · Idioma", "Idioma · Language"));
+    i18n::bind_label(&lang_title, |l| {
+        i18n::pick_for(l, "Language · Idioma", "Idioma · Language")
+    });
     lang_title.add_css_class("system-audio-title");
     lang_title.set_xalign(0.0);
     lang_box.append(&lang_title);
@@ -367,7 +373,8 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
         .build();
 
     let current_theme_id = catalog.state.snapshot().theme().to_string();
-    let theme_buttons: Rc<RefCell<Vec<(Theme, gtk::Button, gtk::Label)>>> = Rc::new(RefCell::new(Vec::new()));
+    let theme_buttons: Rc<RefCell<Vec<(Theme, gtk::Button, gtk::Label)>>> =
+        Rc::new(RefCell::new(Vec::new()));
 
     for (idx, &theme) in Theme::ALL.iter().enumerate() {
         let btn = gtk::Button::new();
@@ -392,7 +399,13 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
         let (r, g, b) = theme.accent_rgb();
         swatch.set_draw_func(move |_, cr, w, h| {
             let radius = (w.min(h) as f64 / 2.0) - 1.0;
-            cr.arc(w as f64 / 2.0, h as f64 / 2.0, radius, 0.0, 2.0 * std::f64::consts::PI);
+            cr.arc(
+                w as f64 / 2.0,
+                h as f64 / 2.0,
+                radius,
+                0.0,
+                2.0 * std::f64::consts::PI,
+            );
             cr.set_source_rgb(r, g, b);
             let _ = cr.fill_preserve();
             cr.set_source_rgba(1.0, 1.0, 1.0, 0.25);
@@ -774,10 +787,9 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
 
             glib::MainContext::default().spawn_local(async move {
                 let key_call = api_key.clone();
-                let res = gtk::gio::spawn_blocking(move || {
-                    crate::scrobbler::request_token(&key_call)
-                })
-                .await;
+                let res =
+                    gtk::gio::spawn_blocking(move || crate::scrobbler::request_token(&key_call))
+                        .await;
                 btn_cb.set_sensitive(true);
                 match res {
                     Ok(Ok(token)) => {
@@ -818,8 +830,8 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
             if let Some(e) = ke.upgrade() {
                 e.set_placeholder_text(Some(i18n::pick_for(
                     l,
-                    "Custom Last.fm API Key (leave empty for default)",
-                    "API Key personalizada da Last.fm (vazio usa padrão)",
+                    "Last.fm API Key (required)",
+                    "API Key da Last.fm (obrigatória)",
                 )));
             }
         });
@@ -836,8 +848,8 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
             if let Some(e) = se.upgrade() {
                 e.set_placeholder_text(Some(i18n::pick_for(
                     l,
-                    "Custom Shared Secret (leave empty for default)",
-                    "Shared Secret personalizado (vazio usa padrão)",
+                    "Last.fm Shared Secret (required)",
+                    "Shared Secret da Last.fm (obrigatório)",
                 )));
             }
         });
@@ -979,10 +991,7 @@ pub fn settings_window(parent: &gtk::Window, catalog: &Rc<Catalog>) -> gtk::Wind
         let weak_error = weak_error.clone();
         let weak_window = window.downgrade();
         gtk::FileDialog::builder()
-            .title(i18n::pick(
-                "Add music folder",
-                "Adicionar pasta de músicas",
-            ))
+            .title(i18n::pick("Add music folder", "Adicionar pasta de músicas"))
             .build()
             .select_folder(
                 Some(&window),

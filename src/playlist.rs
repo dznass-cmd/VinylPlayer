@@ -298,7 +298,9 @@ impl PlaylistManager {
         if fs::symlink_metadata(file_path).is_ok() {
             fs::remove_file(file_path)?;
         }
-        self.playlists.borrow_mut().retain(|p| p.file_path != file_path);
+        self.playlists
+            .borrow_mut()
+            .retain(|p| p.file_path != file_path);
         Ok(())
     }
 
@@ -351,7 +353,8 @@ fn percent_decode_path(input: &str) -> String {
         decoded.push(bytes[i]);
         i += 1;
     }
-    String::from_utf8(decoded).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+    String::from_utf8(decoded)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
 #[cfg(test)]
@@ -373,7 +376,10 @@ subpasta/musica3.mp3
         assert_eq!(tracks.len(), 3);
         assert_eq!(tracks[0], PathBuf::from("/home/user/Música/musica1.flac"));
         assert_eq!(tracks[1], PathBuf::from("/caminho/absoluto/musica2.wav"));
-        assert_eq!(tracks[2], PathBuf::from("/home/user/Música/subpasta/musica3.mp3"));
+        assert_eq!(
+            tracks[2],
+            PathBuf::from("/home/user/Música/subpasta/musica3.mp3")
+        );
     }
 
     #[test]
@@ -405,8 +411,14 @@ subpasta/musica3.mp3
         let loaded = Playlist::load_from_file(&pl_path).unwrap();
         assert_eq!(loaded.name, "Clássicos do Vinil");
         assert_eq!(loaded.tracks.len(), 2);
-        assert_eq!(loaded.tracks[0], PathBuf::from("/music/21 Savage - No Heart.flac"));
-        assert_eq!(loaded.tracks[1], PathBuf::from("/music/Pink Floyd - Time.flac"));
+        assert_eq!(
+            loaded.tracks[0],
+            PathBuf::from("/music/21 Savage - No Heart.flac")
+        );
+        assert_eq!(
+            loaded.tracks[1],
+            PathBuf::from("/music/Pink Floyd - Time.flac")
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -468,7 +480,10 @@ subpasta/musica3.mp3
         assert_eq!(PlaylistManager::sanitize_filename("."), "playlist");
         assert_eq!(PlaylistManager::sanitize_filename(".."), "playlist");
         assert_eq!(PlaylistManager::sanitize_filename(".oculto"), "oculto");
-        assert_eq!(PlaylistManager::sanitize_filename("nome\0com\nnulo"), "nome_com_nulo");
+        assert_eq!(
+            PlaylistManager::sanitize_filename("nome\0com\nnulo"),
+            "nome_com_nulo"
+        );
     }
 
     #[test]
@@ -517,8 +532,14 @@ subpasta/musica3.mp3
     fn parses_file_uri_and_windows_paths() {
         let content = "file:///home/user/Music/Pink%20Floyd/Time.mp3\nfile://localhost/home/user/Music/Led%20Zeppelin/Kashmir.flac\nMusic\\Rock\\Queen.mp3\n";
         let tracks = Playlist::parse_m3u(content, Some(Path::new("/home/user")));
-        assert_eq!(tracks[0], PathBuf::from("/home/user/Music/Pink Floyd/Time.mp3"));
-        assert_eq!(tracks[1], PathBuf::from("/home/user/Music/Led Zeppelin/Kashmir.flac"));
+        assert_eq!(
+            tracks[0],
+            PathBuf::from("/home/user/Music/Pink Floyd/Time.mp3")
+        );
+        assert_eq!(
+            tracks[1],
+            PathBuf::from("/home/user/Music/Led Zeppelin/Kashmir.flac")
+        );
         assert_eq!(tracks[2], PathBuf::from("/home/user/Music/Rock/Queen.mp3"));
     }
 

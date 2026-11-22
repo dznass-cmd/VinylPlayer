@@ -38,7 +38,8 @@ pub fn generate_needle_drop_wav() -> Vec<u8> {
         let thump = if t >= 0.035 {
             let dt = t - 0.035;
             let low = (-dt * 26.0).exp() * (2.0 * std::f64::consts::PI * 72.0 * dt).sin() * 0.55;
-            let click = (-dt * 160.0).exp() * (2.0 * std::f64::consts::PI * 1750.0 * dt).sin() * 0.22;
+            let click =
+                (-dt * 160.0).exp() * (2.0 * std::f64::consts::PI * 1750.0 * dt).sin() * 0.22;
             low + click
         } else {
             0.0
@@ -87,11 +88,11 @@ pub fn generate_needle_drop_wav() -> Vec<u8> {
     // fmt subchunk (PCM)
     wav.extend_from_slice(b"fmt ");
     wav.extend_from_slice(&16_u32.to_le_bytes()); // subchunk1 size
-    wav.extend_from_slice(&1_u16.to_le_bytes());  // AudioFormat 1 = PCM
-    wav.extend_from_slice(&1_u16.to_le_bytes());  // NumChannels 1 = Mono
+    wav.extend_from_slice(&1_u16.to_le_bytes()); // AudioFormat 1 = PCM
+    wav.extend_from_slice(&1_u16.to_le_bytes()); // NumChannels 1 = Mono
     wav.extend_from_slice(&sample_rate.to_le_bytes());
     wav.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // ByteRate (sample_rate * 2 bytes)
-    wav.extend_from_slice(&2_u16.to_le_bytes());  // BlockAlign
+    wav.extend_from_slice(&2_u16.to_le_bytes()); // BlockAlign
     wav.extend_from_slice(&16_u16.to_le_bytes()); // BitsPerSample
 
     // data subchunk
@@ -177,7 +178,9 @@ pub fn play_needle_drop() {
                         break;
                     };
                     let slice = remaining.min(Duration::from_millis(100));
-                    if let Some(msg) = bus.timed_pop(gst::ClockTime::from_nseconds(slice.as_nanos() as u64)) {
+                    if let Some(msg) =
+                        bus.timed_pop(gst::ClockTime::from_nseconds(slice.as_nanos() as u64))
+                    {
                         use gst::MessageView;
                         match msg.view() {
                             MessageView::Eos(..) | MessageView::Error(..) => break,
@@ -220,7 +223,10 @@ mod tests {
             let val = i16::from_le_bytes(*chunk);
             max_val = max_val.max(val.abs());
         }
-        assert!(max_val > 10000, "o áudio do needle drop deve possuir amplitude audível");
+        assert!(
+            max_val > 10000,
+            "o áudio do needle drop deve possuir amplitude audível"
+        );
     }
 
     #[test]

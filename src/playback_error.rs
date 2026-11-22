@@ -83,8 +83,14 @@ impl ErrorPresenter {
         dialog.add_css_class("playback-error");
         dialog.set_tooltip_text(Some(details));
         dialog.add_response("close", crate::i18n::pick_for(lang, "Close", "Fechar"));
-        dialog.add_response("skip", crate::i18n::pick_for(lang, "Skip track", "Pular faixa"));
-        dialog.add_response("retry", crate::i18n::pick_for(lang, "Try again", "Tentar novamente"));
+        dialog.add_response(
+            "skip",
+            crate::i18n::pick_for(lang, "Skip track", "Pular faixa"),
+        );
+        dialog.add_response(
+            "retry",
+            crate::i18n::pick_for(lang, "Try again", "Tentar novamente"),
+        );
         dialog.set_close_response("close");
         dialog.set_response_appearance("retry", libadwaita::ResponseAppearance::Suggested);
         let presenter = self.clone();

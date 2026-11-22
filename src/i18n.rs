@@ -227,11 +227,19 @@ pub fn queue_summary(lang: Language, len: usize, next: usize) -> String {
 pub fn queue_search_summary(lang: Language, shown: usize, len: usize, pending: bool) -> String {
     match lang {
         Language::En => {
-            let loading = if pending { " · reading metadata…" } else { "" };
+            let loading = if pending {
+                " · reading metadata…"
+            } else {
+                ""
+            };
             format!("{shown} of {len} tracks{loading}")
         }
         Language::PtBr => {
-            let loading = if pending { " · lendo metadados…" } else { "" };
+            let loading = if pending {
+                " · lendo metadados…"
+            } else {
+                ""
+            };
             format!("{shown} de {len} faixas{loading}")
         }
     }
@@ -317,7 +325,9 @@ pub fn repeat_tooltip(lang: Language, mode: crate::audio::RepeatMode) -> &'stati
     use crate::audio::RepeatMode;
     match (lang, mode) {
         (Language::En, RepeatMode::Off) => "Repeat · Off (R — click to repeat entire queue)",
-        (Language::PtBr, RepeatMode::Off) => "Repetir · Desativado (R — clique para repetir a fila)",
+        (Language::PtBr, RepeatMode::Off) => {
+            "Repetir · Desativado (R — clique para repetir a fila)"
+        }
         (Language::En, RepeatMode::All) => "Repeat · All (R — click to repeat current track)",
         (Language::PtBr, RepeatMode::All) => {
             "Repetir · Tudo (R — clique para repetir a faixa atual)"
@@ -391,7 +401,13 @@ mod tests {
         assert_eq!(summary_tracks(Language::En, 4, 2), "4 tracks · 2 warnings");
         assert_eq!(summary_tracks(Language::PtBr, 1, 0), "1 faixa");
         assert_eq!(summary_tracks(Language::PtBr, 4, 2), "4 faixas · 2 avisos");
-        assert_eq!(queue_search_summary(Language::En, 0, 4, false), "0 of 4 tracks");
-        assert_eq!(queue_search_summary(Language::PtBr, 0, 4, false), "0 de 4 faixas");
+        assert_eq!(
+            queue_search_summary(Language::En, 0, 4, false),
+            "0 of 4 tracks"
+        );
+        assert_eq!(
+            queue_search_summary(Language::PtBr, 0, 4, false),
+            "0 de 4 faixas"
+        );
     }
 }

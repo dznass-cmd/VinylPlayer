@@ -4,8 +4,6 @@
 use md5::{Digest, Md5};
 use std::time::Duration;
 
-pub const DEFAULT_API_KEY: &str = "";
-pub const DEFAULT_API_SECRET: &str = "";
 pub const API_URL: &str = "https://ws.audioscrobbler.com/2.0/";
 pub const AUTH_URL: &str = "https://www.last.fm/api/auth/";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(12);
@@ -14,7 +12,11 @@ fn http_agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(HTTP_TIMEOUT))
         .http_status_as_error(false)
-        .user_agent("VinylPlayer/0.1.7 (Linux; x86_64; +https://github.com/dznass-cmd/VinylPlayer)")
+        .user_agent(concat!(
+            "VinylPlayer/",
+            env!("CARGO_PKG_VERSION"),
+            " (Linux; +https://github.com/dznass-cmd/VinylPlayer)"
+        ))
         .build()
         .into()
 }
@@ -101,7 +103,10 @@ pub fn request_token(api_key: &str) -> Result<String, String> {
     let val: serde_json::Value = serde_json::from_str(&body_str).unwrap_or(serde_json::Value::Null);
 
     if let Some(err) = val.get("error").and_then(|e| e.as_i64()) {
-        let msg = val.get("message").and_then(|m| m.as_str()).unwrap_or("Erro desconhecido");
+        let msg = val
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("Erro desconhecido");
         return Err(format!("Erro {err}: {msg}"));
     }
 
@@ -112,7 +117,10 @@ pub fn request_token(api_key: &str) -> Result<String, String> {
     if let Some(token) = val.get("token").and_then(|t| t.as_str()) {
         Ok(token.to_string())
     } else {
-        let msg = val.get("message").and_then(|m| m.as_str()).unwrap_or("Token não retornado");
+        let msg = val
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("Token não retornado");
         Err(msg.to_string())
     }
 }
@@ -124,7 +132,11 @@ pub fn authorization_url(api_key: &str, token: &str) -> String {
 }
 
 /// Obtém a chave de sessão permanente (`sk`) e nome de usuário a partir do token autorizado.
-pub fn fetch_session(api_key: &str, api_secret: &str, token: &str) -> Result<(String, String), String> {
+pub fn fetch_session(
+    api_key: &str,
+    api_secret: &str,
+    token: &str,
+) -> Result<(String, String), String> {
     if api_key.trim().is_empty() || api_secret.trim().is_empty() {
         return Err("API Key ou Secret não configurados".to_string());
     }
@@ -155,7 +167,10 @@ pub fn fetch_session(api_key: &str, api_secret: &str, token: &str) -> Result<(St
     let val: serde_json::Value = serde_json::from_str(&body_str).unwrap_or(serde_json::Value::Null);
 
     if let Some(err) = val.get("error").and_then(|e| e.as_i64()) {
-        let msg = val.get("message").and_then(|m| m.as_str()).unwrap_or("Autorização pendente");
+        let msg = val
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("Autorização pendente");
         return Err(format!("Erro {err}: {msg}"));
     }
 
@@ -164,12 +179,21 @@ pub fn fetch_session(api_key: &str, api_secret: &str, token: &str) -> Result<(St
     }
 
     if let Some(session) = val.get("session") {
-        let sk = session.get("key").and_then(|k| k.as_str()).ok_or_else(|| "Chave de sessão ausente".to_string())?;
-        let name = session.get("name").and_then(|n| n.as_str()).ok_or_else(|| "Nome de usuário ausente".to_string())?;
+        let sk = session
+            .get("key")
+            .and_then(|k| k.as_str())
+            .ok_or_else(|| "Chave de sessão ausente".to_string())?;
+        let name = session
+            .get("name")
+            .and_then(|n| n.as_str())
+            .ok_or_else(|| "Nome de usuário ausente".to_string())?;
         Ok((sk.to_string(), name.to_string()))
     } else {
         let err_code = val.get("error").and_then(|e| e.as_i64()).unwrap_or(0);
-        let msg = val.get("message").and_then(|m| m.as_str()).unwrap_or("Autorização pendente");
+        let msg = val
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("Autorização pendente");
         Err(format!("Erro {err_code}: {msg}"))
     }
 }
@@ -223,7 +247,10 @@ pub fn update_now_playing(
     let val: serde_json::Value = serde_json::from_str(&body_str).unwrap_or(serde_json::Value::Null);
 
     if let Some(err) = val.get("error") {
-        let msg = val.get("message").and_then(|m| m.as_str()).unwrap_or("Falha no Now Playing");
+        let msg = val
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("Falha no Now Playing");
         return Err(format!("Erro {err}: {msg}"));
     }
 
@@ -291,7 +318,10 @@ pub fn scrobble_track(
     let val: serde_json::Value = serde_json::from_str(&body_str).unwrap_or(serde_json::Value::Null);
 
     if let Some(err) = val.get("error") {
-        let msg = val.get("message").and_then(|m| m.as_str()).unwrap_or("Falha no Scrobble");
+        let msg = val
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("Falha no Scrobble");
         return Err(format!("Erro {err}: {msg}"));
     }
 
@@ -323,10 +353,7 @@ mod tests {
 
     #[test]
     fn test_encode_form() {
-        let params = [
-            ("artist", "Pink Floyd"),
-            ("track", "Time & Space"),
-        ];
+        let params = [("artist", "Pink Floyd"), ("track", "Time & Space")];
         let encoded = encode_form(&params);
         assert_eq!(encoded, "artist=Pink+Floyd&track=Time+%26+Space");
     }

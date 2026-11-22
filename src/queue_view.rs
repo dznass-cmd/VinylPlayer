@@ -337,11 +337,7 @@ fn apply_filter(shared: &Rc<Shared>) {
                 "Sua fila está vazia.\nAbra uma música ou reproduza um álbum.",
             )
         } else if pending {
-            crate::i18n::pick_for(
-                lang,
-                "Reading queue metadata…",
-                "Lendo metadados da fila…",
-            )
+            crate::i18n::pick_for(lang, "Reading queue metadata…", "Lendo metadados da fila…")
         } else {
             crate::i18n::pick_for(
                 lang,

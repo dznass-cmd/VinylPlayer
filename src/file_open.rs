@@ -19,10 +19,9 @@ fn validate(files: &[gtk::gio::File]) -> Request {
     let mut seen = HashSet::new();
     for file in files {
         let Some(path) = file.path() else {
-            request.rejected.push(format!(
-                "{}: only local files are supported",
-                file.uri()
-            ));
+            request
+                .rejected
+                .push(format!("{}: only local files are supported", file.uri()));
             continue;
         };
         let extension = path

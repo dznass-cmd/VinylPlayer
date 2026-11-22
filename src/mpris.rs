@@ -80,7 +80,18 @@ fn is_supported_audio_file(path: &Path) -> bool {
         .to_ascii_lowercase();
     matches!(
         ext.as_str(),
-        "flac" | "mp3" | "ogg" | "oga" | "wav" | "m4a" | "aac" | "opus" | "alac" | "aif" | "aiff" | "wma"
+        "flac"
+            | "mp3"
+            | "ogg"
+            | "oga"
+            | "wav"
+            | "m4a"
+            | "aac"
+            | "opus"
+            | "alac"
+            | "aif"
+            | "aiff"
+            | "wma"
     )
 }
 
@@ -90,8 +101,8 @@ pub(crate) fn resolve_local_audio_uri(uri: &str) -> Result<PathBuf, String> {
         return Err("Empty URI".into());
     }
     let path = if trimmed.starts_with("file://") {
-        let (p, host) = glib::filename_from_uri(trimmed)
-            .map_err(|e| format!("Invalid file URI: {e}"))?;
+        let (p, host) =
+            glib::filename_from_uri(trimmed).map_err(|e| format!("Invalid file URI: {e}"))?;
         if host
             .as_deref()
             .is_some_and(|h| !h.is_empty() && h != "localhost")
@@ -105,7 +116,10 @@ pub(crate) fn resolve_local_audio_uri(uri: &str) -> Result<PathBuf, String> {
         PathBuf::from(trimmed)
     };
     if !path.is_absolute() || !is_supported_audio_file(&path) {
-        return Err(format!("Unavailable or unsupported audio file: {}", path.display()));
+        return Err(format!(
+            "Unavailable or unsupported audio file: {}",
+            path.display()
+        ));
     }
     Ok(path)
 }
@@ -241,13 +255,19 @@ impl MprisPlayer {
         let track_path = if m.uri.is_empty() {
             "/org/mpris/MediaPlayer2/TrackList/NoTrack".to_string()
         } else {
-            format!("/org/mpris/MediaPlayer2/track/{}", self.audio.track_sequence())
+            format!(
+                "/org/mpris/MediaPlayer2/track/{}",
+                self.audio.track_sequence()
+            )
         };
         o.insert(
             "mpris:trackid".into(),
-            OwnedValue::from(ObjectPath::try_from(track_path.as_str()).unwrap_or_else(|_| {
-                ObjectPath::from_static_str("/org/mpris/MediaPlayer2/TrackList/NoTrack").unwrap()
-            })),
+            OwnedValue::from(
+                ObjectPath::try_from(track_path.as_str()).unwrap_or_else(|_| {
+                    ObjectPath::from_static_str("/org/mpris/MediaPlayer2/TrackList/NoTrack")
+                        .unwrap()
+                }),
+            ),
         );
         if !m.title.is_empty() {
             o.insert("xesam:title".into(), OwnedValue::from(Str::from(m.title)));
@@ -439,10 +459,7 @@ mod tests {
 
         let uri = glib::filename_to_uri(&wav, None).unwrap();
         assert_eq!(resolve_local_audio_uri(&uri).unwrap(), wav);
-        assert_eq!(
-            resolve_local_audio_uri(wav.to_str().unwrap()).unwrap(),
-            wav
-        );
+        assert_eq!(resolve_local_audio_uri(wav.to_str().unwrap()).unwrap(), wav);
         assert!(resolve_local_audio_uri("https://example.invalid/a.flac").is_err());
         assert!(resolve_local_audio_uri("file://remote-host/tmp/a.flac").is_err());
         assert!(resolve_local_audio_uri(&glib::filename_to_uri(&txt, None).unwrap()).is_err());

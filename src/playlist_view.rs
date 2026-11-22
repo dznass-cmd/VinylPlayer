@@ -2,10 +2,10 @@
 use crate::audio::AudioEngine;
 use crate::now_playing;
 use crate::playlist::{Playlist, PlaylistManager};
+use adw::prelude::MessageDialogExt;
 use gtk::prelude::*;
 use gtk::{glib, Orientation};
 use libadwaita as adw;
-use adw::prelude::MessageDialogExt;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -23,10 +23,7 @@ struct PlaylistRowContext<'a> {
 }
 
 /// Cria a visualização principal de Playlists para inclusão no Stack principal da aplicação.
-pub fn playlist_library_view(
-    audio: &Arc<AudioEngine>,
-    manager: &PlaylistManager,
-) -> gtk::Widget {
+pub fn playlist_library_view(audio: &Arc<AudioEngine>, manager: &PlaylistManager) -> gtk::Widget {
     let navigation = gtk::Stack::new();
     navigation.set_hexpand(true);
     navigation.set_vexpand(true);
@@ -73,11 +70,7 @@ fn playlist_browse_view(
         crate::i18n::pick_for(l, "New Playlist", "Nova Playlist")
     });
     crate::i18n::bind_tooltip(&new_btn, |l| {
-        crate::i18n::pick_for(
-            l,
-            "Create a new M3U8 playlist",
-            "Criar nova playlist M3U8",
-        )
+        crate::i18n::pick_for(l, "Create a new M3U8 playlist", "Criar nova playlist M3U8")
     });
 
     // Botão Importar M3U
@@ -206,10 +199,8 @@ fn playlist_browse_view(
             pop_box.set_margin_start(10);
             pop_box.set_margin_end(10);
 
-            let title = gtk::Label::new(Some(crate::i18n::pick(
-                "Playlist Name",
-                "Nome da Playlist",
-            )));
+            let title =
+                gtk::Label::new(Some(crate::i18n::pick("Playlist Name", "Nome da Playlist")));
             title.add_css_class("system-audio-title");
             title.set_xalign(0.0);
 
@@ -220,8 +211,7 @@ fn playlist_browse_view(
             )));
             entry.set_width_chars(24);
 
-            let create_btn =
-                gtk::Button::with_label(crate::i18n::pick("Create", "Criar"));
+            let create_btn = gtk::Button::with_label(crate::i18n::pick("Create", "Criar"));
             create_btn.add_css_class("open-button");
 
             pop_box.append(&title);
@@ -344,7 +334,8 @@ fn playlist_card(
     title_lbl.set_xalign(0.0);
     title_lbl.set_ellipsize(gtk::pango::EllipsizeMode::End);
 
-    let count_str = crate::i18n::playlist_tracks_count(crate::i18n::current(), playlist.tracks.len());
+    let count_str =
+        crate::i18n::playlist_tracks_count(crate::i18n::current(), playlist.tracks.len());
     let count_lbl = gtk::Label::new(Some(&count_str));
     count_lbl.add_css_class("playlist-card-count");
     count_lbl.set_xalign(0.0);
@@ -366,10 +357,7 @@ fn playlist_card(
 
     let play_btn = gtk::Button::from_icon_name("media-playback-start-symbolic");
     play_btn.add_css_class("open-button");
-    play_btn.set_tooltip_text(Some(crate::i18n::pick(
-        "Play Playlist",
-        "Tocar Playlist",
-    )));
+    play_btn.set_tooltip_text(Some(crate::i18n::pick("Play Playlist", "Tocar Playlist")));
 
     let del_btn = gtk::Button::from_icon_name("user-trash-symbolic");
     del_btn.add_css_class("playlist-del-btn");
@@ -412,7 +400,8 @@ fn playlist_card(
                     nav.remove(&prev);
                 }
                 // Recarrega sempre do disco para nunca abrir estado obsoleto
-                let pl = Playlist::load_from_file(&file_path).unwrap_or_else(|_| pl_initial.clone());
+                let pl =
+                    Playlist::load_from_file(&file_path).unwrap_or_else(|_| pl_initial.clone());
                 let detail = playlist_detail_view(&audio, &pl, &mgr, &nav, &reload);
                 nav.add_named(&detail, Some("detail"));
                 nav.set_visible_child_name("detail");
@@ -651,7 +640,10 @@ fn playlist_detail_view(
                 if let Ok(files) = dialog.open_multiple_future(parent.as_ref()).await {
                     let mut added = false;
                     for i in 0..files.n_items() {
-                        if let Some(file) = files.item(i).and_then(|obj| obj.downcast::<gtk::gio::File>().ok()) {
+                        if let Some(file) = files
+                            .item(i)
+                            .and_then(|obj| obj.downcast::<gtk::gio::File>().ok())
+                        {
                             if let Some(path) = file.path() {
                                 pl_state.borrow_mut().add_track(path);
                                 added = true;
@@ -752,11 +744,7 @@ fn playlist_detail_view(
 }
 
 /// Cria a linha de uma faixa dentro da tela de detalhes da playlist.
-fn playlist_track_row(
-    ctx: &PlaylistRowContext<'_>,
-    path: PathBuf,
-    idx: usize,
-) -> gtk::Widget {
+fn playlist_track_row(ctx: &PlaylistRowContext<'_>, path: PathBuf, idx: usize) -> gtk::Widget {
     let audio = ctx.audio;
     let queue = &ctx.queue;
     let pl_state = ctx.pl_state;
@@ -894,7 +882,9 @@ fn refresh_playlist_list(
     count_weak: &glib::WeakRef<gtk::Label>,
     manager: &Rc<PlaylistManager>,
 ) {
-    let Some(list) = list_weak.upgrade() else { return };
+    let Some(list) = list_weak.upgrade() else {
+        return;
+    };
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }

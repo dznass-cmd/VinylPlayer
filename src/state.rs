@@ -94,9 +94,9 @@ pub struct AppState {
     pub lastfm_session_key: Option<String>,
     /// Nome de usuário da Last.fm autenticado.
     pub lastfm_username: Option<String>,
-    /// Chave de API personalizada da Last.fm (None usa a padrão embutida).
+    /// Chave de API fornecida pelo usuário para a Last.fm.
     pub lastfm_api_key: Option<String>,
-    /// Shared secret personalizado da Last.fm (None usa o padrão embutido).
+    /// Shared secret fornecido pelo usuário para a Last.fm.
     pub lastfm_api_secret: Option<String>,
     /// Tema visual / cor de destaque da interface. Padrão: "amber".
     pub theme: Option<String>,
@@ -166,21 +166,18 @@ impl AppState {
     }
 
     pub fn lastfm_api_key(&self) -> &str {
-        self.lastfm_api_key
-            .as_deref()
-            .unwrap_or(crate::scrobbler::DEFAULT_API_KEY)
+        self.lastfm_api_key.as_deref().unwrap_or("")
     }
 
     pub fn lastfm_api_secret(&self) -> &str {
-        self.lastfm_api_secret
-            .as_deref()
-            .unwrap_or(crate::scrobbler::DEFAULT_API_SECRET)
+        self.lastfm_api_secret.as_deref().unwrap_or("")
     }
 
     pub fn is_lastfm_authenticated(&self) -> bool {
         !self.lastfm_api_key().trim().is_empty()
             && !self.lastfm_api_secret().trim().is_empty()
-            && self.lastfm_session_key
+            && self
+                .lastfm_session_key
                 .as_ref()
                 .is_some_and(|k| !k.trim().is_empty())
     }
@@ -437,7 +434,9 @@ impl StateManager {
                 return parent.join("library_index.json");
             }
         }
-        gtk::glib::user_cache_dir().join("vinylplayer").join("library_index.json")
+        gtk::glib::user_cache_dir()
+            .join("vinylplayer")
+            .join("library_index.json")
     }
 
     fn update(&self, edit: impl FnOnce(&mut AppState)) {
@@ -729,7 +728,10 @@ mod tests {
         assert!(restored.target_light);
         assert!((restored.pitch - 0.035).abs() < 0.0001);
         assert!(restored.lastfm_enabled);
-        assert_eq!(restored.lastfm_session_key.as_deref(), Some("test_session_key_123"));
+        assert_eq!(
+            restored.lastfm_session_key.as_deref(),
+            Some("test_session_key_123")
+        );
         assert_eq!(restored.lastfm_username.as_deref(), Some("vinyl_fan"));
     }
 

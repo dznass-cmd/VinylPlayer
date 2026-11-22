@@ -295,7 +295,10 @@ mod tests {
                 ".folder-button:hover",
                 "button:focus-visible",
             ] {
-                assert!(css.contains(selector), "missing theme override for {selector}");
+                assert!(
+                    css.contains(selector),
+                    "missing theme override for {selector}"
+                );
             }
         }
         assert_eq!(Theme::from_id("unknown"), Theme::AmberGold);

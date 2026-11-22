@@ -75,18 +75,18 @@ mod library;
 mod library_settings;
 mod library_sources;
 mod mpris;
+mod needle_drop;
 mod now_playing;
 mod playback_error;
 mod playback_queue;
-mod queue_view;
-mod search;
-mod state;
-mod needle_drop;
 mod playlist;
 mod playlist_view;
-mod thumb_cache;
+mod queue_view;
 mod scrobbler;
+mod search;
+mod state;
 mod theme;
+mod thumb_cache;
 mod turntable;
 mod volume_hud;
 mod vu_meter;
@@ -96,10 +96,12 @@ thread_local! {
     static BASE_CSS_PROVIDER: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };
 }
 
-pub(crate) use turntable::{CachedCover, TurntableCache, TurntableLayout, TurntableRenderParams, draw_turntable};
-pub(crate) use volume_hud::VolumeHudState;
 use audio::{AudioEngine, PlaybackState, RepeatMode};
 use gstreamer::prelude::ElementExt;
+pub(crate) use turntable::{
+    draw_turntable, CachedCover, TurntableCache, TurntableLayout, TurntableRenderParams,
+};
+pub(crate) use volume_hud::VolumeHudState;
 
 use adw::prelude::MessageDialogExt;
 use libadwaita as adw;
@@ -295,11 +297,23 @@ fn build_ui_with_catalog(
     );
 
     stack.add_named(
-        &library_view(&audio, false, &search_hub, &state_mgr, initial_tracks.clone()),
+        &library_view(
+            &audio,
+            false,
+            &search_hub,
+            &state_mgr,
+            initial_tracks.clone(),
+        ),
         Some("tracks"),
     );
     stack.add_named(
-        &library_view(&audio, true, &search_hub, &state_mgr, initial_tracks.clone()),
+        &library_view(
+            &audio,
+            true,
+            &search_hub,
+            &state_mgr,
+            initial_tracks.clone(),
+        ),
         Some("albums"),
     );
     let playlist_mgr = playlist::PlaylistManager::new(None);
@@ -378,8 +392,10 @@ fn build_ui_with_catalog(
     let drop_audio = audio.clone();
     let drop_stack = stack.downgrade();
     let drop_title = title_label.downgrade();
-    let drop_nav_btns: Vec<(gtk::Button, &'static str)> =
-        nav_buttons.iter().map(|(b, p, _)| (b.clone(), *p)).collect();
+    let drop_nav_btns: Vec<(gtk::Button, &'static str)> = nav_buttons
+        .iter()
+        .map(|(b, p, _)| (b.clone(), *p))
+        .collect();
     drop.connect_drop(move |_, value, _, _| {
         let mut paths = Vec::new();
         if let Ok(file_list) = value.get::<gdk::FileList>() {
@@ -430,7 +446,18 @@ fn build_ui_with_catalog(
                         }
                     } else if matches!(
                         ext.as_str(),
-                        "flac" | "mp3" | "ogg" | "oga" | "wav" | "m4a" | "aac" | "opus" | "alac" | "aif" | "aiff" | "wma"
+                        "flac"
+                            | "mp3"
+                            | "ogg"
+                            | "oga"
+                            | "wav"
+                            | "m4a"
+                            | "aac"
+                            | "opus"
+                            | "alac"
+                            | "aif"
+                            | "aiff"
+                            | "wma"
                     ) {
                         collected.push(path);
                     }
@@ -557,7 +584,10 @@ fn build_ui_with_catalog(
 
     let window = ApplicationWindow::builder()
         .application(app)
-        .title(i18n::window_title(i18n::current(), env!("CARGO_PKG_VERSION")))
+        .title(i18n::window_title(
+            i18n::current(),
+            env!("CARGO_PKG_VERSION"),
+        ))
         .default_width(1220)
         .default_height(780)
         .child(&root)
@@ -714,10 +744,7 @@ fn build_ui_with_catalog(
             return glib::Propagation::Proceed;
         }
 
-        if modifier.intersects(
-            gdk::ModifierType::CONTROL_MASK
-                | gdk::ModifierType::SUPER_MASK,
-        ) {
+        if modifier.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SUPER_MASK) {
             return glib::Propagation::Proceed;
         }
         if let Some(win) = key_win.upgrade() {
@@ -1347,11 +1374,7 @@ fn populate_album_views(
     };
     let mode_cell = Rc::new(std::cell::Cell::new(initial_mode));
     let (grid_widget, grid) = album_grid(audio, &albums, navigation, &mode_cell, search_hub);
-    let covers_page = views.add_titled(
-        &grid_widget,
-        Some("covers"),
-        i18n::pick("Covers", "Capas"),
-    );
+    let covers_page = views.add_titled(&grid_widget, Some("covers"), i18n::pick("Covers", "Capas"));
     i18n::connect(&grid_widget, move |l| {
         covers_page.set_title(i18n::pick_for(l, "Covers", "Capas"));
     });
@@ -1474,8 +1497,12 @@ fn populate_album_views(
                         if weak_list.upgrade().is_none() {
                             return;
                         }
-                        let child =
-                            track_row_in_queue(&audio, path, true, Some((tracks.clone(), track_idx)));
+                        let child = track_row_in_queue(
+                            &audio,
+                            path,
+                            true,
+                            Some((tracks.clone(), track_idx)),
+                        );
                         box_.append(&child);
                         if track_idx % 32 == 31 {
                             glib::timeout_future_with_priority(
@@ -2365,10 +2392,7 @@ fn main_stage(
     status_box.add_css_class("listening-status");
     let status_icon = gtk::Image::from_icon_name("media-playback-stop-symbolic");
     status_icon.set_pixel_size(12);
-    let status = gtk::Label::new(Some(i18n::playback_status(
-        i18n::current(),
-        audio.state(),
-    )));
+    let status = gtk::Label::new(Some(i18n::playback_status(i18n::current(), audio.state())));
     status_box.append(&status_icon);
     status_box.append(&status);
     heading.append(&status_box);
@@ -2553,7 +2577,8 @@ fn main_stage(
         }
 
         // 2. Clique na Torre da Luz Alvo (Stylus Target Light)
-        let d_tl = ((x - layout.target_light_x).powi(2) + (y - layout.target_light_y).powi(2)).sqrt();
+        let d_tl =
+            ((x - layout.target_light_x).powi(2) + (y - layout.target_light_y).powi(2)).sqrt();
         if d_tl <= layout.target_light_r + 6.0 {
             let next_tl = !click_state_mgr.snapshot().target_light;
             click_tl.set(next_tl);
@@ -2576,7 +2601,11 @@ fn main_stage(
             } else {
                 let rel = (center_y - y) / (slot_h / 2.0);
                 let p = (rel * 0.08).clamp(-0.08, 0.08);
-                if p.abs() < 0.003 { 0.0 } else { p }
+                if p.abs() < 0.003 {
+                    0.0
+                } else {
+                    p
+                }
             };
             click_pitch.set(new_pitch);
             click_state_mgr.update_pitch(new_pitch);
@@ -2604,7 +2633,9 @@ fn main_stage(
     let motion = gtk::EventControllerMotion::new();
     let motion_deck = deck.downgrade();
     motion.connect_motion(move |_, x, y| {
-        let Some(deck_widget) = motion_deck.upgrade() else { return; };
+        let Some(deck_widget) = motion_deck.upgrade() else {
+            return;
+        };
         let w = deck_widget.width() as f64;
         let h = deck_widget.height() as f64;
         let layout = TurntableLayout::compute(w, h);
@@ -2614,7 +2645,8 @@ fn main_stage(
         let d45 = ((x - led45_x).powi(2) + (y - layout.led_y).powi(2)).sqrt();
         let in_rpm = d33 <= 20.0 || d45 <= 20.0;
 
-        let d_tl = ((x - layout.target_light_x).powi(2) + (y - layout.target_light_y).powi(2)).sqrt();
+        let d_tl =
+            ((x - layout.target_light_x).powi(2) + (y - layout.target_light_y).powi(2)).sqrt();
         let in_tl = d_tl <= layout.target_light_r + 6.0;
 
         let px = layout.pitch_x;
@@ -2646,8 +2678,12 @@ fn main_stage(
     let drag_audio = audio.clone();
     let drag_deck = deck.downgrade();
     drag.connect_drag_update(move |gesture, _offset_x, _offset_y| {
-        let Some((start_x, start_y)) = gesture.start_point() else { return; };
-        let Some(deck_widget) = drag_deck.upgrade() else { return; };
+        let Some((start_x, start_y)) = gesture.start_point() else {
+            return;
+        };
+        let Some(deck_widget) = drag_deck.upgrade() else {
+            return;
+        };
         let w = deck_widget.width() as f64;
         let h = deck_widget.height() as f64;
         let layout = TurntableLayout::compute(w, h);
@@ -2656,7 +2692,11 @@ fn main_stage(
         let pw = layout.pitch_w;
         let ph = layout.pitch_h;
 
-        if start_x >= px - 10.0 && start_x <= px + pw + 10.0 && start_y >= py - 8.0 && start_y <= py + ph + 8.0 {
+        if start_x >= px - 10.0
+            && start_x <= px + pw + 10.0
+            && start_y >= py - 8.0
+            && start_y <= py + ph + 8.0
+        {
             let (_, cur_offset_y) = gesture.offset().unwrap_or((0.0, 0.0));
             let cur_y = start_y + cur_offset_y;
             let center_y = py + ph / 2.0;
@@ -3149,7 +3189,11 @@ fn next_mute_toggle(cur_vol: f64, pre_mute: &Cell<f64>) -> f64 {
         0.0
     } else {
         let restore = pre_mute.get();
-        if restore > 0.01 { restore } else { 0.75 }
+        if restore > 0.01 {
+            restore
+        } else {
+            0.75
+        }
     }
 }
 
@@ -3407,7 +3451,11 @@ fn player_bar(
 
     let vol = gtk::Scale::with_range(Orientation::Horizontal, 0.0, 1.0, 0.01);
     let initial_vol = state_mgr.snapshot().volume;
-    let pre_mute_vol = Rc::new(Cell::new(if initial_vol > 0.01 { initial_vol } else { 0.75 }));
+    let pre_mute_vol = Rc::new(Cell::new(if initial_vol > 0.01 {
+        initial_vol
+    } else {
+        0.75
+    }));
     vol.set_value(initial_vol);
     vol.set_width_request(100);
     vol.set_draw_value(false);
@@ -3615,10 +3663,7 @@ fn player_bar(
                 };
                 tick_artist.set_text(&art);
             } else {
-                tick_title.set_text(i18n::pick(
-                    "No track loaded",
-                    "Nenhuma faixa carregada",
-                ));
+                tick_title.set_text(i18n::pick("No track loaded", "Nenhuma faixa carregada"));
                 tick_artist.set_text("VinylPlayer");
             }
 
@@ -3797,7 +3842,8 @@ fn player_bar(
                         scrobbled: false,
                     };
                 } else if let Some(prev_inst) = cs.last_play_instant.replace(now_inst) {
-                    let delta_ms = (now_inst.duration_since(prev_inst).as_millis() as u64).min(1000);
+                    let delta_ms =
+                        (now_inst.duration_since(prev_inst).as_millis() as u64).min(1000);
                     cs.listened_ms = cs.listened_ms.saturating_add(delta_ms);
                 }
 
@@ -3825,7 +3871,11 @@ fn player_bar(
                     let sk = lfm_snap.lastfm_session_key.clone().unwrap_or_default();
                     let artist = cs.artist.clone();
                     let track = cs.title.clone();
-                    let album = if cs.album.is_empty() { None } else { Some(cs.album.clone()) };
+                    let album = if cs.album.is_empty() {
+                        None
+                    } else {
+                        Some(cs.album.clone())
+                    };
                     let dur = cs.duration_sec;
 
                     std::thread::Builder::new()
@@ -3863,7 +3913,11 @@ fn player_bar(
                     let sk = lfm_snap.lastfm_session_key.clone().unwrap_or_default();
                     let artist = cs.artist.clone();
                     let track = cs.title.clone();
-                    let album = if cs.album.is_empty() { None } else { Some(cs.album.clone()) };
+                    let album = if cs.album.is_empty() {
+                        None
+                    } else {
+                        Some(cs.album.clone())
+                    };
                     let ts = cs.start_ts;
                     let dur = cs.duration_sec;
 

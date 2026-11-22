@@ -167,11 +167,7 @@ struct GaplessPending {
     uri: String,
 }
 
-fn next_auto_index_from(
-    queue: &PlaybackQueue,
-    shuffle: bool,
-    repeat: RepeatMode,
-) -> Option<usize> {
+fn next_auto_index_from(queue: &PlaybackQueue, shuffle: bool, repeat: RepeatMode) -> Option<usize> {
     let len = queue.tracks.len();
     if len == 0 {
         return None;
@@ -484,7 +480,10 @@ impl AudioEngine {
         let mut queue = self.queue.lock().unwrap();
         anyhow::ensure!(
             queue.accepts(revision, index),
-            crate::i18n::pick("The queue changed. Try again.", "A fila mudou. Tente novamente.")
+            crate::i18n::pick(
+                "The queue changed. Try again.",
+                "A fila mudou. Tente novamente."
+            )
         );
         self.set_track(&queue.tracks[index])?;
         queue.current = Some(index);
@@ -495,7 +494,10 @@ impl AudioEngine {
         let mut queue = self.queue.lock().unwrap();
         anyhow::ensure!(
             queue.accepts(revision, from) && to < queue.tracks.len(),
-            crate::i18n::pick("The queue changed. Try again.", "A fila mudou. Tente novamente.")
+            crate::i18n::pick(
+                "The queue changed. Try again.",
+                "A fila mudou. Tente novamente."
+            )
         );
         queue.move_item(from, to);
         Ok(())
@@ -505,7 +507,10 @@ impl AudioEngine {
         let mut queue = self.queue.lock().unwrap();
         anyhow::ensure!(
             queue.accepts(revision, index),
-            crate::i18n::pick("The queue changed. Try again.", "A fila mudou. Tente novamente.")
+            crate::i18n::pick(
+                "The queue changed. Try again.",
+                "A fila mudou. Tente novamente."
+            )
         );
         let removing_current = queue.current == Some(index);
         let previous = self.state();
@@ -1513,7 +1518,10 @@ mod tests {
 
         // Seek deve suceder e preservar o rate customizado de 1.05x
         let seek_res = engine.seek_us(100_000); // 100 ms
-        assert!(seek_res.is_ok(), "seek_us deve ser aceito pelo pipeline: {seek_res:?}");
+        assert!(
+            seek_res.is_ok(),
+            "seek_us deve ser aceito pelo pipeline: {seek_res:?}"
+        );
         assert!((engine.rate() - 1.05).abs() < 0.001);
 
         let _ = engine.playbin.set_state(gst::State::Null);

@@ -1,0 +1,45 @@
+name: Bug report
+description: Report a reproducible VinylPlayer problem
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to report a problem. Remove credentials and private paths from logs before submitting.
+  - type: input
+    id: version
+    attributes:
+      label: VinylPlayer version
+      placeholder: "0.2.1"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Linux environment
+      description: Distribution, desktop, Wayland/X11, PipeWire, GTK, and Libadwaita versions
+      placeholder: "Manjaro, GNOME 49, Wayland, PipeWire 1.x"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open …
+        2. Play …
+        3. Observe …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste sanitized terminal output. Do not include Last.fm credentials, private audio, or personal paths.
+      render: shell

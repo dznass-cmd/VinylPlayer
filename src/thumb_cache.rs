@@ -68,7 +68,11 @@ pub fn load_cached_thumbnail(source_path: &Path, target_size: i32) -> Option<gdk
 
     let mtime = std::fs::metadata(source_path)
         .and_then(|m| m.modified())
-        .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+        .map(|t| {
+            t.duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        })
         .unwrap_or(0);
 
     let stem = format!(
@@ -90,7 +94,9 @@ pub fn load_cached_thumbnail(source_path: &Path, target_size: i32) -> Option<gdk
     }
 
     // Slow path: downscale from original file and persist thumbnail
-    if let Ok(image) = gdk_pixbuf::Pixbuf::from_file_at_scale(source_path, target_size, target_size, true) {
+    if let Ok(image) =
+        gdk_pixbuf::Pixbuf::from_file_at_scale(source_path, target_size, target_size, true)
+    {
         if image.has_alpha() {
             let _ = image.savev(&png_path, "png", &[]);
         } else {

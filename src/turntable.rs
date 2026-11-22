@@ -358,7 +358,13 @@ pub fn render_background(layout: &TurntableLayout, w: i32, h: i32) -> Option<cai
         let frac = i as f64 / 4.0;
         let y = center_y - frac * (slot_h / 2.0 - 2.0);
         let is_center = i == 0;
-        let tick_w = if is_center { 7.0 } else if i % 2 == 0 { 5.0 } else { 3.0 };
+        let tick_w = if is_center {
+            7.0
+        } else if i % 2 == 0 {
+            5.0
+        } else {
+            3.0
+        };
         if is_center {
             cr.set_source_rgba(0.95, 0.85, 0.40, 0.90);
             cr.set_line_width(1.2);
@@ -920,10 +926,7 @@ pub fn draw_strobe_dots(
     cr.fill().ok();
 
     // 2. Duas fileiras de calibração estroboscópica usinadas na lateral chanfrada
-    let rows: &[(f64, usize, f64)] = &[
-        (r_platter - 2.2, 72, 1.15),
-        (r_platter - 5.0, 53, 1.05),
-    ];
+    let rows: &[(f64, usize, f64)] = &[(r_platter - 2.2, 72, 1.15), (r_platter - 5.0, 53, 1.05)];
 
     for &(radius, count, dot_r) in rows {
         for i in 0..count {
@@ -982,7 +985,8 @@ pub fn draw_target_light(
         let beam_target_y = layout.cy + layout.r_disc * 0.32;
         let beam_len = 190.0;
 
-        let beam = cairo::RadialGradient::new(lens_x, lens_y, 2.0, beam_target_x, beam_target_y, beam_len);
+        let beam =
+            cairo::RadialGradient::new(lens_x, lens_y, 2.0, beam_target_x, beam_target_y, beam_len);
         beam.add_color_stop_rgba(0.0, 1.0, 0.94, 0.75, 0.38);
         beam.add_color_stop_rgba(0.3, 1.0, 0.90, 0.60, 0.16);
         beam.add_color_stop_rgba(0.7, 0.95, 0.82, 0.45, 0.05);
@@ -1048,10 +1052,22 @@ pub fn draw_pitch_fader(cr: &gtk::cairo::Context, layout: &TurntableLayout, pitc
     let knob_x = slot_x - knob_w / 2.0;
 
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.45);
-    draw_rounded_rect(cr, knob_x + 1.0, knob_y - knob_h / 2.0 + 2.0, knob_w, knob_h, 1.5);
+    draw_rounded_rect(
+        cr,
+        knob_x + 1.0,
+        knob_y - knob_h / 2.0 + 2.0,
+        knob_w,
+        knob_h,
+        1.5,
+    );
     cr.fill().ok();
 
-    let knob_grad = cairo::LinearGradient::new(knob_x, knob_y - knob_h / 2.0, knob_x + knob_w, knob_y + knob_h / 2.0);
+    let knob_grad = cairo::LinearGradient::new(
+        knob_x,
+        knob_y - knob_h / 2.0,
+        knob_x + knob_w,
+        knob_y + knob_h / 2.0,
+    );
     knob_grad.add_color_stop_rgba(0.0, 0.85, 0.86, 0.92, 1.0);
     knob_grad.add_color_stop_rgba(0.4, 0.55, 0.54, 0.58, 1.0);
     knob_grad.add_color_stop_rgba(0.8, 0.28, 0.27, 0.32, 1.0);
@@ -1106,9 +1122,8 @@ mod tests {
         assert!(layout.strobe_x <= layout.mx + layout.dw);
         assert!(layout.strobe_y >= layout.my);
         assert!(layout.strobe_y <= layout.my + layout.dh);
-        let dist_strobe_center = ((layout.strobe_x - layout.cx).powi(2)
-            + (layout.strobe_y - layout.cy).powi(2))
-        .sqrt();
+        let dist_strobe_center =
+            ((layout.strobe_x - layout.cx).powi(2) + (layout.strobe_y - layout.cy).powi(2)).sqrt();
         assert!(
             dist_strobe_center > layout.r_platter,
             "O prisma estroboscópico deve ficar fora do prato giratório"

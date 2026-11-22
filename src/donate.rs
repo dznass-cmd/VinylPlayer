@@ -422,8 +422,7 @@ mod tests {
     #[test]
     fn test_binance_wallet_address_and_qr() {
         assert_eq!(
-            WALLET_ADDRESS,
-            "0xbc1ce0b7d0e5bc3332502bb82cf34125e3062b86",
+            WALLET_ADDRESS, "0xbc1ce0b7d0e5bc3332502bb82cf34125e3062b86",
             "Wallet address must match the user's Binance deposit address"
         );
         // Verify QR PNG magic bytes
@@ -433,4 +432,3 @@ mod tests {
         );
     }
 }
-
