@@ -92,7 +92,6 @@ pub struct TrackMetadata {
     pub cover_bytes: Option<Vec<u8>>,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AudioQuality {
     HiRes,
@@ -100,7 +99,6 @@ pub(crate) enum AudioQuality {
     Standard,
 }
 
-#[allow(dead_code)]
 pub(crate) fn classify_quality(
     bit_depth: Option<i32>,
     sample_rate: Option<i32>,
@@ -113,6 +111,22 @@ pub(crate) fn classify_quality(
     } else {
         AudioQuality::Standard
     }
+}
+
+pub(crate) fn codec_is_lossless(codec: &str) -> bool {
+    ["FLAC", "ALAC", "WAV", "PCM"]
+        .into_iter()
+        .any(|name| codec.contains(name))
+}
+
+fn raw_audio_bit_depth(format: &str) -> Option<i32> {
+    let format = format.trim().to_ascii_uppercase();
+    let numeric = format
+        .strip_prefix(['S', 'U', 'F'])?
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>();
+    numeric.parse().ok()
 }
 
 fn cyclic_index(current: usize, len: usize, forward: bool) -> Option<usize> {
@@ -881,7 +895,11 @@ impl AudioEngine {
             m.codec = name.to_string();
         }
         m.sample_rate = s.get::<i32>("rate").ok();
-        m.bit_depth = s.get::<i32>("depth").ok();
+        m.bit_depth = s.get::<i32>("depth").ok().or_else(|| {
+            s.get::<String>("format")
+                .ok()
+                .and_then(|format| raw_audio_bit_depth(&format))
+        });
         drop(m);
         self.metadata_ver.fetch_add(1, Ordering::Relaxed);
     }
@@ -1260,6 +1278,30 @@ mod tests {
             classify_quality(Some(16), Some(44_100), false),
             AudioQuality::Standard
         );
+        assert_eq!(
+            classify_quality(Some(24), Some(48_000), true),
+            AudioQuality::HiFi
+        );
+        assert_eq!(
+            classify_quality(Some(16), Some(96_000), true),
+            AudioQuality::HiFi
+        );
+        assert_eq!(
+            classify_quality(Some(24), Some(96_000), false),
+            AudioQuality::Standard
+        );
+    }
+
+    #[test]
+    fn detects_lossless_codecs_and_raw_audio_bit_depths() {
+        assert!(codec_is_lossless("Free Lossless Audio Codec (FLAC)"));
+        assert!(codec_is_lossless("audio/x-raw PCM"));
+        assert!(!codec_is_lossless("MPEG-1 Layer 3 (MP3)"));
+
+        assert_eq!(raw_audio_bit_depth("S16LE"), Some(16));
+        assert_eq!(raw_audio_bit_depth("S24_32LE"), Some(24));
+        assert_eq!(raw_audio_bit_depth("F32LE"), Some(32));
+        assert_eq!(raw_audio_bit_depth("unknown"), None);
     }
 
     #[test]

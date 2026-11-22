@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.vinylplayer</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>VinylPlayer</name>
+  <developer id="io.github.dznass-cmd">
+    <name>Dzerivado</name>
+  </developer>
+  <summary>Analog-inspired native music player for Linux</summary>
+  <summary xml:lang="pt-BR">Player de música nativo inspirado em toca-discos</summary>
+  <description>
+    <p>
+      VinylPlayer is a lightweight GTK4 music player with an animated turntable,
+      local library management, playlists, a playback queue, MPRIS controls, and
+      optional Last.fm scrobbling.
+    </p>
+    <p xml:lang="pt-BR">
+      VinylPlayer é um player GTK4 leve com toca-discos animado, biblioteca local,
+      playlists, fila de reprodução, controles MPRIS e scrobbling opcional no Last.fm.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.vinylplayer.desktop</launchable>
+  <url type="homepage">https://github.com/dznass-cmd/VinylPlayer</url>
+  <url type="bugtracker">https://github.com/dznass-cmd/VinylPlayer/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/dznass-cmd/VinylPlayer/main/docs/turntable-playing.png</image>
+      <caption>The animated turntable during playback</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/dznass-cmd/VinylPlayer/main/docs/albums-grid.png</image>
+      <caption>Album library grid</caption>
+    </screenshot>
+  </screenshots>
+  <provides>
+    <binary>vinylplayer</binary>
+    <mediatype>audio/flac</mediatype>
+    <mediatype>audio/mpeg</mediatype>
+    <mediatype>audio/ogg</mediatype>
+    <mediatype>audio/wav</mediatype>
+    <mediatype>audio/mp4</mediatype>
+    <mediatype>audio/aac</mediatype>
+    <mediatype>audio/opus</mediatype>
+  </provides>
+  <releases>
+    <release version="0.2.2" date="2026-11-22">
+      <description>
+        <p>Adds accurate Hi-Res and Hi-Fi classification, broader build documentation, and AppStream metadata.</p>
+      </description>
+    </release>
+    <release version="0.2.1" date="2026-11-22">
+      <description>
+        <p>Improves release integrity, documentation accuracy, CI, and contributor readiness.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>

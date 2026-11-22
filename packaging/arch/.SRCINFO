@@ -1,6 +1,6 @@
 pkgbase = vinylplayer
 	pkgdesc = Analog-inspired, lightweight, and native music player for the Linux desktop
-	pkgver = 0.2.1
+	pkgver = 0.2.2
 	pkgrel = 1
 	url = https://github.com/dznass-cmd/VinylPlayer
 	arch = x86_64
@@ -15,7 +15,7 @@ pkgbase = vinylplayer
 	optdepends = ffmpeg: leitura de metadados e tags avançadas com ffprobe
 	optdepends = flac: extração de capas embutidas em FLAC com metaflac
 	options = !lto
-	source = vinylplayer-0.2.1.tar.gz::https://github.com/dznass-cmd/VinylPlayer/releases/download/v0.2.1/VinylPlayer-0.2.1.tar.gz
-	sha256sums = 7eaa5b7f55c7711ff84ae6f1cab5a0d39929782f42bd71bb7e59b1ce94ef1a3a
+	source = vinylplayer-0.2.2.tar.gz::https://github.com/dznass-cmd/VinylPlayer/releases/download/v0.2.2/VinylPlayer-0.2.2.tar.gz
+	sha256sums = e0de5c79510b126eff2da186faceff7dbc07b6f79cd613506cfc21c86fb844e3
 
 pkgname = vinylplayer

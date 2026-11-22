@@ -3739,8 +3739,6 @@ fn player_bar(
                 }
             }
 
-            let is_hires = m.bit_depth.map(|d| d >= 24).unwrap_or(false)
-                || m.sample_rate.map(|r| r >= 88_200).unwrap_or(false);
             let codec_upper = if !m.codec.is_empty() {
                 m.codec.to_uppercase()
             } else if let Some(ext) = m.uri.rsplit('.').next() {
@@ -3776,20 +3774,29 @@ fn player_bar(
                 })
                 .to_owned()
             };
-            if is_hires {
-                tick_badge.set_text("HI-RES");
-                tick_badge.set_visible(true);
-                tick_badge.set_css_classes(&["quality-badge", "badge-hires"]);
-            } else if codec_upper == "FLAC" || codec_upper == "WAV" || codec_upper == "ALAC" {
-                tick_badge.set_text("LOSSLESS");
-                tick_badge.set_visible(true);
-                tick_badge.set_css_classes(&["quality-badge", "badge-hifi"]);
-            } else if !codec_upper.is_empty() {
-                tick_badge.set_text(&codec_upper);
-                tick_badge.set_visible(true);
-                tick_badge.set_css_classes(&["quality-badge", "badge-standard"]);
-            } else {
-                tick_badge.set_visible(false);
+            let is_lossless = audio::codec_is_lossless(&codec_upper);
+            match audio::classify_quality(m.bit_depth, m.sample_rate, is_lossless) {
+                audio::AudioQuality::HiRes => {
+                    tick_badge.set_text("HI-RES");
+                    tick_badge.set_visible(true);
+                    tick_badge.set_css_classes(&["quality-badge", "badge-hires"]);
+                }
+                audio::AudioQuality::HiFi => {
+                    tick_badge.set_text("HI-FI");
+                    tick_badge.set_visible(true);
+                    tick_badge.set_css_classes(&["quality-badge", "badge-hifi"]);
+                }
+                audio::AudioQuality::Standard if is_lossless => {
+                    tick_badge.set_text("LOSSLESS");
+                    tick_badge.set_visible(true);
+                    tick_badge.set_css_classes(&["quality-badge", "badge-hifi"]);
+                }
+                audio::AudioQuality::Standard if !codec_upper.is_empty() => {
+                    tick_badge.set_text(&codec_upper);
+                    tick_badge.set_visible(true);
+                    tick_badge.set_css_classes(&["quality-badge", "badge-standard"]);
+                }
+                audio::AudioQuality::Standard => tick_badge.set_visible(false),
             }
         }
 

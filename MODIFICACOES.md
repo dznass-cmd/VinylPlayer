@@ -2,6 +2,15 @@
 
 Registro atualizado em 22/11/2026.
 
+## Release v0.2.2 — Accurate Audio Quality & Linux Integration — 22/11/2026
+
+- Corrected the quality badge so `HI-RES` requires a lossless source at 24-bit/96 kHz or above, while qualifying 16-bit lossless audio is labeled `HI-FI`.
+- Added raw GStreamer sample-format parsing so bit depth is detected from formats such as `S16LE`, `S24_32LE`, and `F32LE`.
+- Added AppStream metadata and installed it through the Arch package for better desktop software-center integration.
+- Expanded source-build dependency instructions for Ubuntu, Debian, and Fedora.
+- Hardened CI with all-target/all-feature checks plus desktop-file and AppStream validation.
+- Added weekly grouped dependency updates for Cargo crates and GitHub Actions.
+
 ## Release v0.2.1 — Release Integrity & Contributor Readiness — 22/11/2026
 
 - Replaced the unverified bit-perfect claim with an accurate description of GStreamer/PipeWire format negotiation and clarified Hi-Res output limitations.

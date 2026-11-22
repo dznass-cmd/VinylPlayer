@@ -28,7 +28,9 @@ jobs:
             libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good
+            gstreamer1.0-plugins-good \
+            appstream \
+            desktop-file-utils
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -36,8 +38,12 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Run Clippy
-        run: cargo clippy --all-targets --locked -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - name: Run tests
-        run: cargo test --locked
+        run: cargo test --locked --all-targets
+      - name: Validate desktop integration metadata
+        run: |
+          desktop-file-validate vinylplayer.desktop
+          appstreamcli validate --pedantic io.github.vinylplayer.metainfo.xml
       - name: Build release binary
         run: cargo build --release --locked

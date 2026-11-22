@@ -1,5 +1,5 @@
 pkgname=vinylplayer
-pkgver=0.2.1
+pkgver=0.2.2
 pkgrel=1
 pkgdesc='Analog-inspired, lightweight, and native music player for the Linux desktop'
 arch=('x86_64')
@@ -13,7 +13,7 @@ optdepends=(
 makedepends=('cargo')
 options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/VinylPlayer-$pkgver.tar.gz")
-sha256sums=('7eaa5b7f55c7711ff84ae6f1cab5a0d39929782f42bd71bb7e59b1ce94ef1a3a')
+sha256sums=('e0de5c79510b126eff2da186faceff7dbc07b6f79cd613506cfc21c86fb844e3')
 
 prepare() {
   cd "VinylPlayer-$pkgver"
@@ -31,4 +31,5 @@ package() {
   install -Dm644 vinylplayer.desktop "$pkgdir/usr/share/applications/io.github.vinylplayer.desktop"
   install -Dm644 assets/vinylplayer.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.vinylplayer.svg"
   install -Dm644 assets/vinylplayer.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/vinylplayer.svg"
+  install -Dm644 io.github.vinylplayer.metainfo.xml "$pkgdir/usr/share/metainfo/io.github.vinylplayer.metainfo.xml"
 }

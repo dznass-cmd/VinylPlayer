@@ -9,7 +9,7 @@ Crafted with **Rust**, **GTK4 / Libadwaita**, and **GStreamer / PipeWire**.
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![GTK4](https://img.shields.io/badge/GUI-GTK4%20%2F%20Libadwaita-blue?logo=gnome&logoColor=white)](https://gtk.org/)
 [![Audio](https://img.shields.io/badge/Audio-GStreamer%20%2F%20PipeWire-brightgreen)](https://pipewire.org/)
-[![Version](https://img.shields.io/badge/Version-0.2.1-purple.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/Version-0.2.2-purple.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/License-GPLv3-green.svg)](LICENSE)
 [![Arch Linux](https://img.shields.io/badge/Arch%20Linux-PKGBUILD%20Ready-1793d1?logo=arch-linux&logoColor=white)](packaging/arch/PKGBUILD)
 
@@ -135,6 +135,22 @@ sudo pacman -S gtk4 libadwaita gstreamer gst-plugins-base gst-plugins-good gst-p
 - `ffmpeg`: Enhanced metadata reading and tag extraction via `ffprobe`.
 - `flac`: Fast embedded cover extraction for FLAC files via `metaflac`.
 
+### Dependencies (Ubuntu / Debian)
+
+```bash
+sudo apt install libgtk-4-dev libadwaita-1-dev libgstreamer1.0-dev \
+  libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good gstreamer1.0-pipewire cargo
+```
+
+### Dependencies (Fedora)
+
+```bash
+sudo dnf install gtk4-devel libadwaita-devel gstreamer1-devel \
+  gstreamer1-plugins-base-devel gstreamer1-plugins-good \
+  gstreamer1-plugin-pipewire cargo
+```
+
 ---
 
 ### Building from Source
@@ -155,6 +171,7 @@ install -Dm755 target/release/vinylplayer ~/.local/bin/vinylplayer
 install -Dm644 vinylplayer.desktop ~/.local/share/applications/io.github.vinylplayer.desktop
 install -Dm644 assets/vinylplayer.svg ~/.local/share/icons/hicolor/scalable/apps/io.github.vinylplayer.svg
 install -Dm644 assets/vinylplayer.svg ~/.local/share/icons/hicolor/scalable/apps/vinylplayer.svg
+install -Dm644 io.github.vinylplayer.metainfo.xml ~/.local/share/metainfo/io.github.vinylplayer.metainfo.xml
 ```
 
 ---
