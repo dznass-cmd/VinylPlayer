@@ -6,6 +6,7 @@ Registro atualizado em 23/11/2026.
 
 - Fixed the Flatpak release job on GitHub-hosted Ubuntu runners by installing `flatpak-builder` explicitly.
 - Made the professional preview integration test locate the album grid by widget type instead of relying on private GTK child wrappers.
+- Ensured the professional preview integration test creates hermetic fixtures and waits for catalog scanning, passing cleanly in clean CI runners without host music files.
 - Disabled the unavailable accessibility bus in headless CI to remove unrelated GTK warnings.
 - Removed the unused `gstreamer-audio` dependency and synchronized the Flatpak offline source map.
 

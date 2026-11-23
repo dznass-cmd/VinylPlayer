@@ -17,6 +17,6 @@ pkgbase = vinylplayer
 	optdepends = gnome-keyring: armazenamento seguro das credenciais Last.fm
 	options = !lto
 	source = vinylplayer-0.3.1.tar.gz::https://github.com/dznass-cmd/VinylPlayer/releases/download/v0.3.1/VinylPlayer-0.3.1.tar.gz
-	sha256sums = 80f622791e539f3ac164db56f95623e40cf5bc18f9d619aaf4fd36b89cdbca4b
+	sha256sums = d7e62d936ee26029f678a2edbba9a5eba11a37320bbba6dc0196a2822c366312
 
 pkgname = vinylplayer

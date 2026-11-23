@@ -14,7 +14,7 @@ optdepends=(
 makedepends=('cargo')
 options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/VinylPlayer-$pkgver.tar.gz")
-sha256sums=('80f622791e539f3ac164db56f95623e40cf5bc18f9d619aaf4fd36b89cdbca4b')
+sha256sums=('d7e62d936ee26029f678a2edbba9a5eba11a37320bbba6dc0196a2822c366312')
 
 prepare() {
   cd "VinylPlayer-$pkgver"

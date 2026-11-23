@@ -78,11 +78,7 @@ fn open_files_reuses_window_and_preserves_selection_order() {
     window.close();
 }
 
-fn silent_test_tracks(config: &state::TestConfig) -> [std::path::PathBuf; 3] {
-    let first = config.path().with_file_name("03 - Música #1.wav");
-    let second = config.path().with_file_name("02 - Outra faixa.wav");
-    let third = config.path().with_file_name("01 - Última.wav");
-    // PCM mono de 30 segundos: tempo suficiente para verificar a fila sem EOS.
+fn write_silent_wav(path: &std::path::Path) {
     let samples = 8000_u32 * 30;
     let bytes = samples * 2;
     let mut wav = Vec::new();
@@ -99,8 +95,15 @@ fn silent_test_tracks(config: &state::TestConfig) -> [std::path::PathBuf; 3] {
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&bytes.to_le_bytes());
     wav.resize(44 + bytes as usize, 0);
+    std::fs::write(path, &wav).unwrap();
+}
+
+fn silent_test_tracks(config: &state::TestConfig) -> [std::path::PathBuf; 3] {
+    let first = config.path().with_file_name("03 - Música #1.wav");
+    let second = config.path().with_file_name("02 - Outra faixa.wav");
+    let third = config.path().with_file_name("01 - Última.wav");
     for path in [&first, &second, &third] {
-        std::fs::write(path, &wav).unwrap();
+        write_silent_wav(path);
     }
     [first, second, third]
 }
@@ -1352,9 +1355,31 @@ fn render_professional_preview() {
         .build();
     app.register(None::<&gtk::gio::Cancellable>).unwrap();
     let test_config = state::TestConfig::new();
-    std::fs::write(test_config.path(), r#"{"language": "en"}"#).unwrap();
-    crate::i18n::set_current(crate::i18n::Language::En);
-    let audio = build_ui_with_state(&app, state::StateManager::with_path(test_config.path()));
+
+    let music_dir = test_config.path().parent().unwrap().join("Music");
+    let album_dir = music_dir.join("Demo Album");
+    std::fs::create_dir_all(&album_dir).unwrap();
+    for track_name in [
+        "01 - First Track.wav",
+        "02 - Second Track.wav",
+        "03 - Third Track.wav",
+    ] {
+        write_silent_wav(&album_dir.join(track_name));
+    }
+
+    let default_roots = state::AppState::default_library_roots();
+    let default_scanned = library_sources::scan(&default_roots);
+    let library_roots = if default_scanned.tracks.len() >= 2 {
+        default_roots
+    } else {
+        vec![music_dir]
+    };
+
+    let manager = state::StateManager::with_path(test_config.path());
+    manager.update_library_folders(library_roots);
+    manager.update_language(Some("en".to_string()));
+
+    let (audio, catalog) = build_ui_with_catalog(&app, manager);
     crate::i18n::set_current(crate::i18n::Language::En);
     let silent_sink = gstreamer::ElementFactory::make("fakesink")
         .property("sync", true)
@@ -1362,11 +1387,8 @@ fn render_professional_preview() {
         .unwrap();
     audio.element().set_property("audio-sink", &silent_sink);
     let main_loop = glib::MainLoop::new(None, false);
-    let exit_loop = main_loop.clone();
-    glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || {
-        exit_loop.quit()
-    });
-    main_loop.run();
+    wait_for_catalog(&catalog, &main_loop);
+    settle(&main_loop);
     let window = app.active_window().unwrap();
     save_preview(&window, "/tmp/vinylplayer-professional.png");
     let body = window.child().unwrap().first_child().unwrap();
