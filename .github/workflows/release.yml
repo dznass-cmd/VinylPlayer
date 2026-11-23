@@ -67,7 +67,7 @@ jobs:
       - name: Install Flatpak builder and SDK dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y flatpak flatpak-builder
+          sudo apt-get install --no-install-recommends -y flatpak flatpak-builder librsvg2-common
           sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
           sudo flatpak install -y flathub org.gnome.Platform/x86_64/49 org.gnome.Sdk/x86_64/49 org.freedesktop.Sdk.Extension.rust-stable/x86_64/25.08
       - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
