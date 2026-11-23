@@ -1777,3 +1777,99 @@ fn render_vu_meter_preview_to_file() {
     }
     assert!(std::path::Path::new("docs/vu-meter.png").exists());
 }
+
+#[test]
+fn render_turntable_hero_gif() {
+    use std::f64::consts::TAU;
+    let frames_dir = std::path::Path::new("/tmp/vinyl_gif_frames");
+    let _ = std::fs::remove_dir_all(frames_dir);
+    std::fs::create_dir_all(frames_dir).unwrap();
+
+    let w = 580;
+    let h = 360;
+    let cache = Rc::new(RefCell::new(TurntableCache::default()));
+    let cover_surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 240, 240).unwrap();
+    {
+        let cr_cov = cairo::Context::new(&cover_surface).unwrap();
+        cr_cov.set_source_rgb(0.12, 0.16, 0.24);
+        cr_cov.paint().unwrap();
+        cr_cov.arc(120.0, 120.0, 95.0, 0.0, TAU);
+        cr_cov.set_source_rgb(0.85, 0.65, 0.20);
+        cr_cov.fill().unwrap();
+        cr_cov.arc(120.0, 120.0, 65.0, 0.0, TAU);
+        cr_cov.set_source_rgb(0.60, 0.15, 0.20);
+        cr_cov.fill().unwrap();
+        cr_cov.arc(120.0, 120.0, 35.0, 0.0, TAU);
+        cr_cov.set_source_rgb(0.95, 0.92, 0.85);
+        cr_cov.fill().unwrap();
+        cr_cov.arc(120.0, 120.0, 8.0, 0.0, TAU);
+        cr_cov.set_source_rgb(0.08, 0.08, 0.08);
+        cr_cov.fill().unwrap();
+    }
+    cache.borrow_mut().cover.surface = Some((240, cover_surface));
+
+    let num_frames = 36;
+    for i in 0..num_frames {
+        let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h).unwrap();
+        let cr = cairo::Context::new(&surface).unwrap();
+
+        let t = i as f64 / num_frames as f64;
+        let disc_angle = t * TAU;
+        let arm_angle = 1.95 + 0.004 * (2.0 * t * TAU).sin();
+
+        // Batidas harmonicas para balistica perfeita do VU meter e loop continuo
+        let beat1 = (t * TAU).sin();
+        let beat2 = (2.0 * t * TAU).cos();
+        let beat3 = (4.0 * t * TAU).sin();
+        let vu_l = 0.58 + 0.20 * beat1 + 0.12 * beat3;
+        let vu_r = 0.62 + 0.18 * beat2 + 0.15 * beat3;
+
+        let p = TurntableRenderParams {
+            w,
+            h,
+            disc_angle,
+            arm_angle,
+            is_playing: true,
+            cache: &cache,
+            scale: 1,
+            rpm: 33,
+            volume_level: 0.0,
+            volume_alpha: 0.0,
+            vu_needle_l: vu_l.clamp(0.1, 0.95),
+            vu_needle_r: vu_r.clamp(0.1, 0.95),
+            target_light_on: true,
+            pitch: 0.0,
+        };
+        draw_turntable(&cr, &p);
+        drop(cr);
+
+        let stride = surface.stride() as usize;
+        let data = surface.data().unwrap();
+        let bytes = glib::Bytes::from(&data[..]);
+        let texture = gdk::MemoryTexture::new(
+            w,
+            h,
+            gdk::MemoryFormat::B8g8r8a8Premultiplied,
+            &bytes,
+            stride,
+        );
+        let frame_path = format!("/tmp/vinyl_gif_frames/frame_{:03}.png", i);
+        texture.save_to_png(&frame_path).unwrap();
+    }
+
+    let status = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-framerate",
+            "20",
+            "-i",
+            "/tmp/vinyl_gif_frames/frame_%03d.png",
+            "-filter_complex",
+            "[0:v] split [a][b];[a] palettegen=max_colors=128:stats_mode=diff [p];[b][p] paletteuse=dither=bayer:bayer_scale=3",
+            "docs/turntable-demo.gif",
+        ])
+        .status()
+        .expect("ffmpeg execucao");
+    assert!(status.success());
+    assert!(std::path::Path::new("docs/turntable-demo.gif").exists());
+}

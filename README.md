@@ -12,10 +12,11 @@ Crafted with **Rust**, **GTK4 / Libadwaita**, and **GStreamer / PipeWire**.
 [![Version](https://img.shields.io/badge/Version-0.3.1-purple.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/License-GPLv3-green.svg)](LICENSE)
 [![Arch Linux](https://img.shields.io/badge/Arch%20Linux-PKGBUILD%20Ready-1793d1?logo=arch-linux&logoColor=white)](packaging/arch/PKGBUILD)
+[![Flatpak](https://img.shields.io/badge/Flatpak-v0.3.1%20Ready-4a90d9?logo=flatpak&logoColor=white)](https://github.com/dznass-cmd/VinylPlayer/releases/tag/v0.3.1)
 
 <br/>
 
-![VinylPlayer Turntable](docs/turntable-playing.png)
+![VinylPlayer Real-Time Turntable & Analog VU Meters](docs/turntable-demo.gif)
 
 </div>
 
