@@ -12,7 +12,7 @@ jobs:
   source:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Validate tag and create reproducible source archive
@@ -30,7 +30,7 @@ jobs:
           expected="$(sed -n "s/^sha256sums=('\([^']*\)').*/\1/p" packaging/arch/PKGBUILD)"
           actual="$(sha256sum "VinylPlayer-$version.tar.gz" | cut -d' ' -f1)"
           test "$expected" = "$actual"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: source-archive
           path: VinylPlayer-*.tar.gz
@@ -41,8 +41,8 @@ jobs:
     container: archlinux:base-devel
     steps:
       - run: pacman -Syu --noconfirm git gtk4 libadwaita gstreamer gst-plugins-base gst-plugins-good gst-plugin-pipewire rust
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: source-archive
           path: packaging/arch
@@ -54,7 +54,7 @@ jobs:
           useradd -m builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
           runuser -u builder -- makepkg -f --noconfirm
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: arch-package
           path: packaging/arch/*.pkg.tar.zst
@@ -63,7 +63,7 @@ jobs:
     needs: source
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Flatpak builder and SDK dependencies
         run: |
           sudo apt-get update
@@ -75,7 +75,7 @@ jobs:
           bundle: VinylPlayer.flatpak
           manifest-path: packaging/flatpak/io.github.vinylplayer.yml
           cache-key: flatpak-builder-${{ github.sha }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: flatpak-bundle
           path: VinylPlayer.flatpak
@@ -84,7 +84,7 @@ jobs:
     needs: [source, arch, flatpak]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: release-assets
           merge-multiple: true
