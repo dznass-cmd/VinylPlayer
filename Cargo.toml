@@ -1,6 +1,6 @@
 [package]
 name = "vinyl-player"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 authors = ["Dzerivado <187990890+dznass-cmd@users.noreply.github.com>"]
 description = "Analog-inspired, lightweight, and native music player for the Linux desktop"
@@ -29,6 +29,8 @@ zvariant = "4"
 md-5 = "0.11.0"
 ureq = { version = "3.5.2", features = ["json"] }
 hex = "0.4.3"
+oo7 = "0.7.3"
+tokio = { version = "1", features = ["rt", "net", "time"] }
 
 [profile.release]
 opt-level = 3

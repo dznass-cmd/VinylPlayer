@@ -9,7 +9,7 @@ Crafted with **Rust**, **GTK4 / Libadwaita**, and **GStreamer / PipeWire**.
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![GTK4](https://img.shields.io/badge/GUI-GTK4%20%2F%20Libadwaita-blue?logo=gnome&logoColor=white)](https://gtk.org/)
 [![Audio](https://img.shields.io/badge/Audio-GStreamer%20%2F%20PipeWire-brightgreen)](https://pipewire.org/)
-[![Version](https://img.shields.io/badge/Version-0.2.2-purple.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/Version-0.3.0-purple.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/License-GPLv3-green.svg)](LICENSE)
 [![Arch Linux](https://img.shields.io/badge/Arch%20Linux-PKGBUILD%20Ready-1793d1?logo=arch-linux&logoColor=white)](packaging/arch/PKGBUILD)
 
@@ -80,8 +80,9 @@ Crafted with **Rust**, **GTK4 / Libadwaita**, and **GStreamer / PipeWire**.
 - **Audioscrobbler Compliance:** Follows official submission guidelines ($\ge \min(\text{duration} / 2, 240\text{s})$ on tracks $\ge 30\text{s}$).
 - **Zero Audio Hiccup:** Threaded non-blocking HTTP dispatch without audio buffer underruns or GTK main loop freezes.
 - **Bring-Your-Own Credentials:** Configure a Last.fm API key and shared secret in Settings; the repository does not embed credentials.
+- **Secure Credential Storage:** Last.fm keys and sessions use Secret Service on the desktop and the encrypted Secret portal inside Flatpak. If neither is available, VinylPlayer falls back to its mode-0600 preferences file without blocking the interface.
 
-To enable scrobbling, create an API account at [Last.fm](https://www.last.fm/api/account/create), then enter its API key and shared secret under **Settings → Last.fm**. Credentials remain in the local VinylPlayer state file and are never committed to this repository.
+To enable scrobbling, create an API account at [Last.fm](https://www.last.fm/api/account/create), then enter its API key and shared secret under **Settings → Last.fm**. Existing plaintext credentials are migrated out of `state.json` automatically when the desktop secret store is available.
 
 <div align="center">
   <img src="docs/settings.png" alt="Settings & Library" width="48%" />
@@ -185,6 +186,15 @@ cd packaging/arch
 makepkg -si
 ```
 
+### Flatpak Bundle
+
+Each GitHub release includes a self-contained `VinylPlayer.flatpak` bundle:
+
+```bash
+flatpak install --user ./VinylPlayer.flatpak
+flatpak run io.github.vinylplayer
+```
+
 ---
 
 ## 🧪 Automated Testing
@@ -196,6 +206,8 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
+
+GitHub Actions also runs the ignored GTK/media integration suite under Xvfb, records cold-start time and peak resident memory, and builds the Flatpak and Arch artifacts for version tags.
 
 See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the development workflow and [`SECURITY.md`](./SECURITY.md) for responsible vulnerability reporting.
 

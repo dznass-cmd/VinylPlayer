@@ -1,6 +1,14 @@
 # Alterações do VinylPlayer
 
-Registro atualizado em 22/11/2026.
+Registro atualizado em 23/11/2026.
+
+## Release v0.3.0 — Portable Distribution & Secure Credentials — 23/11/2026
+
+- Added an official Flatpak manifest and offline Cargo source map for reproducible sandboxed builds.
+- Added a tag-driven GitHub Actions release pipeline that validates versions and checksums, builds Arch and Flatpak packages, and publishes all assets.
+- Promoted the ignored GTK/media integration tests to a dedicated Xvfb CI job and added cold-start/peak-memory reporting.
+- Moved Last.fm API credentials and session keys to Secret Service on the desktop and the encrypted Secret portal in Flatpak, with automatic legacy migration and a protected fallback.
+- Kept all keyring and persistence I/O away from the GTK main loop.
 
 ## Release v0.2.2 — Accurate Audio Quality & Linux Integration — 22/11/2026
 

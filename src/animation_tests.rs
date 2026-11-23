@@ -1269,6 +1269,10 @@ fn settle(main_loop: &glib::MainLoop) {
 }
 
 fn save_preview(window: &gtk::Window, filename: &str) {
+    if filename.starts_with("docs/") && std::env::var_os("VINYLPLAYER_UPDATE_SCREENSHOTS").is_none()
+    {
+        return;
+    }
     window.present();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
     loop {
@@ -1672,7 +1676,9 @@ fn render_volume_hud_preview_to_file() {
         &bytes,
         stride,
     );
-    texture.save_to_png("docs/volume-hud.png").unwrap();
+    if std::env::var_os("VINYLPLAYER_UPDATE_SCREENSHOTS").is_some() {
+        texture.save_to_png("docs/volume-hud.png").unwrap();
+    }
     assert!(std::path::Path::new("docs/volume-hud.png").exists());
 }
 
@@ -1752,6 +1758,8 @@ fn render_vu_meter_preview_to_file() {
         &bytes,
         stride,
     );
-    texture.save_to_png("docs/vu-meter.png").unwrap();
+    if std::env::var_os("VINYLPLAYER_UPDATE_SCREENSHOTS").is_some() {
+        texture.save_to_png("docs/vu-meter.png").unwrap();
+    }
     assert!(std::path::Path::new("docs/vu-meter.png").exists());
 }

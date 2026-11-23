@@ -44,6 +44,11 @@
     <mediatype>audio/opus</mediatype>
   </provides>
   <releases>
+    <release version="0.3.0" date="2026-11-23">
+      <description>
+        <p>Adds Flatpak packaging, automated release artifacts, graphical CI, startup metrics, and secure Last.fm credential storage.</p>
+      </description>
+    </release>
     <release version="0.2.2" date="2026-11-22">
       <description>
         <p>Adds accurate Hi-Res and Hi-Fi classification, broader build documentation, and AppStream metadata.</p>

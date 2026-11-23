@@ -1,5 +1,5 @@
 pkgname=vinylplayer
-pkgver=0.2.2
+pkgver=0.3.0
 pkgrel=1
 pkgdesc='Analog-inspired, lightweight, and native music player for the Linux desktop'
 arch=('x86_64')
@@ -9,11 +9,12 @@ depends=('gtk4' 'libadwaita' 'gstreamer' 'gst-plugins-base' 'gst-plugins-good' '
 optdepends=(
   'ffmpeg: leitura de metadados e tags avançadas com ffprobe'
   'flac: extração de capas embutidas em FLAC com metaflac'
+  'gnome-keyring: armazenamento seguro das credenciais Last.fm'
 )
 makedepends=('cargo')
 options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/VinylPlayer-$pkgver.tar.gz")
-sha256sums=('e0de5c79510b126eff2da186faceff7dbc07b6f79cd613506cfc21c86fb844e3')
+sha256sums=('deef0fad2ebf77c49c9eb3e1093c3280f14dcbdb530340f9307b226df64ee12f')
 
 prepare() {
   cd "VinylPlayer-$pkgver"

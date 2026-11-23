@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate tag and create reproducible source archive
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          manifest_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          test "$version" = "$manifest_version"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 \
+            --numeric-owner --pax-option=delete=atime,delete=ctime \
+            --transform="s,^,VinylPlayer-$version/," -cf - \
+            Cargo.toml Cargo.lock LICENSE README.md MODIFICACOES.md \
+            CONTRIBUTING.md SECURITY.md src assets docs vinylplayer.desktop \
+            io.github.vinylplayer.metainfo.xml \
+            | gzip -n -9 > "VinylPlayer-$version.tar.gz"
+          expected="$(sed -n "s/^sha256sums=('\([^']*\)').*/\1/p" packaging/arch/PKGBUILD)"
+          actual="$(sha256sum "VinylPlayer-$version.tar.gz" | cut -d' ' -f1)"
+          test "$expected" = "$actual"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source-archive
+          path: VinylPlayer-*.tar.gz
+
+  arch:
+    needs: source
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    steps:
+      - run: pacman -Syu --noconfirm git gtk4 libadwaita gstreamer gst-plugins-base gst-plugins-good gst-plugin-pipewire rust
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: source-archive
+          path: packaging/arch
+      - name: Build Arch package
+        working-directory: packaging/arch
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cp "VinylPlayer-$version.tar.gz" "vinylplayer-$version.tar.gz"
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          runuser -u builder -- makepkg -f --noconfirm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: packaging/arch/*.pkg.tar.zst
+
+  flatpak:
+    needs: source
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: VinylPlayer.flatpak
+          manifest-path: packaging/flatpak/io.github.vinylplayer.yml
+          cache-key: flatpak-builder-${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-bundle
+          path: VinylPlayer.flatpak
+
+  publish:
+    needs: [source, arch, flatpak]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --generate-notes --repo "$GITHUB_REPOSITORY"

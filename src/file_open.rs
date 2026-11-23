@@ -139,6 +139,7 @@ pub fn connect_handlers(
     app.connect_activate(move |app| {
         let (_, window) = ensure_session(app, &active_session, &active_factory);
         window.present();
+        crate::schedule_startup_probe(app);
     });
     app.connect_open(move |app, files, _hint| {
         let mut request = validate(files);
@@ -190,6 +191,7 @@ pub fn connect_handlers(
             }
         }
         window.present();
+        crate::schedule_startup_probe(app);
         show_errors(&window, &request.rejected);
     });
 }

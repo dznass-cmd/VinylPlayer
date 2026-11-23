@@ -1,0 +1,44 @@
+app-id: io.github.vinylplayer
+runtime: org.gnome.Platform
+runtime-version: '49'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: vinylplayer
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --device=dri
+  - --filesystem=xdg-music:ro
+  - --own-name=org.mpris.MediaPlayer2.VinylPlayer
+  - --talk-name=org.freedesktop.Notifications
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/vinyl-player/cargo
+
+modules:
+  - name: vinyl-player
+    buildsystem: simple
+    build-commands:
+      - cargo build --release --locked --offline
+      - install -Dm755 target/release/vinylplayer /app/bin/vinylplayer
+      - install -Dm644 vinylplayer.desktop /app/share/applications/io.github.vinylplayer.desktop
+      - install -Dm644 assets/vinylplayer.svg /app/share/icons/hicolor/scalable/apps/io.github.vinylplayer.svg
+      - install -Dm644 io.github.vinylplayer.metainfo.xml /app/share/metainfo/io.github.vinylplayer.metainfo.xml
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .git
+          - target
+          - packaging/arch/pkg
+          - packaging/arch/src
+          - '*.pkg.tar.zst'
+          - '*.tar.gz'
+      - cargo-sources.json

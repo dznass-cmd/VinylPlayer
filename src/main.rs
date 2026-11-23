@@ -84,6 +84,7 @@ mod playlist_view;
 mod queue_view;
 mod scrobbler;
 mod search;
+mod secrets;
 mod state;
 mod theme;
 mod thumb_cache;
@@ -106,19 +107,40 @@ pub(crate) use volume_hud::VolumeHudState;
 use adw::prelude::MessageDialogExt;
 use libadwaita as adw;
 
+static STARTUP_BEGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+static STARTUP_REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn main() {
+    STARTUP_BEGIN.set(std::time::Instant::now()).ok();
+    // Load preferences and Secret Service credentials before GTK owns this
+    // thread. Keyring access may perform D-Bus I/O and must not block GTK.
+    let state_manager = state::StateManager::new();
     adw::init().expect("libadwaita");
     adw::StyleManager::default().set_color_scheme(adw::ColorScheme::PreferDark);
     let app = Application::builder()
         .application_id("io.github.vinylplayer")
         .flags(gtk::gio::ApplicationFlags::HANDLES_OPEN)
         .build();
-    file_open::connect_handlers(&app, build_ui_with_audio);
+    file_open::connect_handlers(&app, move |app| {
+        build_ui_with_state(app, state_manager.clone())
+    });
     app.run();
 }
 
-fn build_ui_with_audio(app: &Application) -> Arc<AudioEngine> {
-    build_ui_with_state(app, state::StateManager::new())
+pub(crate) fn schedule_startup_probe(app: &Application) {
+    use std::sync::atomic::Ordering;
+    if std::env::var_os("VINYLPLAYER_STARTUP_PROBE").is_none()
+        || STARTUP_REPORTED.swap(true, Ordering::AcqRel)
+    {
+        return;
+    }
+    let app = app.clone();
+    glib::idle_add_local_once(move || {
+        if let Some(started) = STARTUP_BEGIN.get() {
+            eprintln!("VINYLPLAYER_STARTUP_MS={}", started.elapsed().as_millis());
+        }
+        app.quit();
+    });
 }
 
 fn build_ui_with_state(app: &Application, state_mgr: state::StateManager) -> Arc<AudioEngine> {

@@ -388,7 +388,9 @@ struct Store {
     data: Mutex<VersionedState>,
     revision_atomic: AtomicU64,
     writer: Mutex<()>,
+    secret_writer: Mutex<()>,
     saving: AtomicBool,
+    secrets_secured: AtomicBool,
 }
 
 /// Preferências compartilhadas, com escrita serializada e revisões confirmadas após sucesso.
@@ -399,11 +401,56 @@ pub struct StateManager {
 
 impl StateManager {
     pub fn new() -> Self {
-        Self::with_path(AppState::file_path())
+        let path = AppState::file_path();
+        let mut value = AppState::load_from(&path);
+        let legacy = crate::secrets::LastFmSecrets {
+            api_key: value.lastfm_api_key.clone(),
+            api_secret: value.lastfm_api_secret.clone(),
+            session_key: value.lastfm_session_key.clone(),
+        };
+        let had_legacy_secrets = !legacy.is_empty();
+        let secrets_secured = if std::env::var_os("VINYLPLAYER_DISABLE_SECRET_STORE").is_some() {
+            false
+        } else {
+            match crate::secrets::load() {
+                Ok(stored) if !stored.is_empty() => {
+                    value.lastfm_api_key = stored.api_key;
+                    value.lastfm_api_secret = stored.api_secret;
+                    value.lastfm_session_key = stored.session_key;
+                    true
+                }
+                Ok(_) if !legacy.is_empty() => match crate::secrets::store(legacy) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        eprintln!(
+                            "Could not migrate Last.fm credentials to Secret Service: {error}"
+                        );
+                        false
+                    }
+                },
+                Ok(_) => true,
+                Err(error) => {
+                    eprintln!("Secret Service unavailable; keeping Last.fm credentials in the protected preferences file: {error}");
+                    false
+                }
+            }
+        };
+        let manager = Self::from_value(path, value, secrets_secured);
+        if secrets_secured && had_legacy_secrets {
+            if let Err(error) = manager.flush_with(true, AppState::save_to) {
+                eprintln!("Could not remove migrated credentials from state.json: {error}");
+            }
+        }
+        manager
     }
 
+    #[cfg(test)]
     pub(crate) fn with_path(path: PathBuf) -> Self {
         let value = AppState::load_from(&path);
+        Self::from_value(path, value, false)
+    }
+
+    fn from_value(path: PathBuf, value: AppState, secrets_secured: bool) -> Self {
         Self {
             inner: Arc::new(Store {
                 path,
@@ -414,7 +461,9 @@ impl StateManager {
                 }),
                 revision_atomic: AtomicU64::new(0),
                 writer: Mutex::new(()),
+                secret_writer: Mutex::new(()),
                 saving: AtomicBool::new(false),
+                secrets_secured: AtomicBool::new(secrets_secured),
             }),
         }
     }
@@ -491,6 +540,7 @@ impl StateManager {
             state.lastfm_session_key = session_key;
             state.lastfm_username = username;
         });
+        self.persist_lastfm_secrets();
     }
     pub fn update_lastfm_enabled(&self, enabled: bool) {
         self.update(|state| state.lastfm_enabled = enabled);
@@ -500,6 +550,7 @@ impl StateManager {
             state.lastfm_api_key = api_key;
             state.lastfm_api_secret = api_secret;
         });
+        self.persist_lastfm_secrets();
     }
     pub fn update_theme(&self, theme: String) {
         self.update(|state| state.theme = Some(theme));
@@ -535,6 +586,42 @@ impl StateManager {
         data.revision != data.saved_revision
     }
 
+    fn persist_lastfm_secrets(&self) {
+        let manager = self.clone();
+        if let Err(error) = std::thread::Builder::new()
+            .name("vinyl-secret-persist".into())
+            .spawn(move || {
+                let _writer = manager.inner.secret_writer.lock().unwrap();
+                let snapshot = manager.snapshot();
+                let secrets = crate::secrets::LastFmSecrets {
+                    api_key: snapshot.lastfm_api_key,
+                    api_secret: snapshot.lastfm_api_secret,
+                    session_key: snapshot.lastfm_session_key,
+                };
+                match crate::secrets::store(secrets) {
+                    Ok(()) => {
+                        manager.inner.secrets_secured.store(true, Ordering::Release);
+                        if let Err(error) = manager.flush_with(true, AppState::save_to) {
+                            eprintln!(
+                                "Could not sanitize state.json after storing credentials: {error}"
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        manager
+                            .inner
+                            .secrets_secured
+                            .store(false, Ordering::Release);
+                        eprintln!("Could not store Last.fm credentials securely: {error}");
+                        manager.flush_if_dirty();
+                    }
+                }
+            })
+        {
+            eprintln!("Could not start Secret Service persistence worker: {error}");
+        }
+    }
+
     fn flush_with(
         &self,
         force: bool,
@@ -543,13 +630,18 @@ impl StateManager {
         // A revisão é capturada DEPOIS de obter o lock de escrita: um worker atrasado
         // nunca sobrescreve um flush mais novo realizado ao fechar a janela.
         let _writer = self.inner.writer.lock().unwrap();
-        let (snapshot, revision) = {
+        let (mut snapshot, revision) = {
             let data = self.inner.data.lock().unwrap();
             if !force && data.revision == data.saved_revision {
                 return Ok(());
             }
             (data.value.clone(), data.revision)
         };
+        if self.inner.secrets_secured.load(Ordering::Acquire) {
+            snapshot.lastfm_session_key = None;
+            snapshot.lastfm_api_key = None;
+            snapshot.lastfm_api_secret = None;
+        }
         save(&snapshot, &self.inner.path)?;
         let mut data = self.inner.data.lock().unwrap();
         data.saved_revision = data.saved_revision.max(revision);
@@ -733,6 +825,36 @@ mod tests {
             Some("test_session_key_123")
         );
         assert_eq!(restored.lastfm_username.as_deref(), Some("vinyl_fan"));
+    }
+
+    #[test]
+    fn secured_state_flush_removes_lastfm_secrets_but_keeps_username() {
+        let config = TestConfig::new();
+        let mut state = AppState {
+            lastfm_session_key: Some("session-secret".into()),
+            lastfm_username: Some("vinyl_fan".into()),
+            lastfm_api_key: Some("api-key".into()),
+            lastfm_api_secret: Some("api-secret".into()),
+            ..AppState::default()
+        };
+        let manager = StateManager::from_value(config.path(), state.clone(), true);
+        manager.update_volume(0.5);
+        manager.flush_now().unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(config.path()).unwrap()).unwrap();
+        assert!(saved["lastfm_session_key"].is_null());
+        assert!(saved["lastfm_api_key"].is_null());
+        assert!(saved["lastfm_api_secret"].is_null());
+        assert_eq!(saved["lastfm_username"], "vinyl_fan");
+
+        state.volume = 0.25;
+        let fallback = StateManager::from_value(config.path(), state, false);
+        fallback.update_volume(0.75);
+        fallback.flush_now().unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(config.path()).unwrap()).unwrap();
+        assert_eq!(saved["lastfm_session_key"], "session-secret");
+        assert_eq!(saved["lastfm_api_secret"], "api-secret");
     }
 
     #[test]

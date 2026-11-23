@@ -47,3 +47,62 @@ jobs:
           appstreamcli validate --pedantic io.github.vinylplayer.metainfo.xml
       - name: Build release binary
         run: cargo build --release --locked
+
+  graphical-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install graphical test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            dbus-x11 \
+            ffmpeg \
+            xvfb \
+            time
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run ignored GTK and media integration tests
+        env:
+          GDK_BACKEND: x11
+          GST_AUDIO_SINK: fakesink
+        run: dbus-run-session -- xvfb-run -a scripts/run-graphical-tests.sh
+      - name: Measure cold startup and peak resident memory
+        env:
+          GDK_BACKEND: x11
+          GST_AUDIO_SINK: fakesink
+          VINYLPLAYER_STARTUP_PROBE: "1"
+          VINYLPLAYER_DISABLE_SECRET_STORE: "1"
+          XDG_CONFIG_HOME: /tmp/vinylplayer-ci-config
+          XDG_CACHE_HOME: /tmp/vinylplayer-ci-cache
+        run: |
+          cargo build --release --locked
+          dbus-run-session -- xvfb-run -a /usr/bin/time -v \
+            -o startup-metrics.txt target/release/vinylplayer \
+            2>startup-output.txt
+          cat startup-output.txt
+          cat startup-metrics.txt
+          {
+            echo '### Startup benchmark'
+            echo '```text'
+            grep -E 'VINYLPLAYER_STARTUP_MS' startup-output.txt
+            grep -E 'Elapsed|Maximum resident set size' startup-metrics.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload visual test previews and metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphical-test-artifacts
+          if-no-files-found: ignore
+          path: |
+            /tmp/vinylplayer-*.png
+            startup-output.txt
+            startup-metrics.txt
