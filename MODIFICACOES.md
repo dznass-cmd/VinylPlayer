@@ -2,6 +2,13 @@
 
 Registro atualizado em 23/11/2026.
 
+## Release v0.3.1 — CI & Packaging Reliability — 23/11/2026
+
+- Fixed the Flatpak release job on GitHub-hosted Ubuntu runners by installing `flatpak-builder` explicitly.
+- Made the professional preview integration test locate the album grid by widget type instead of relying on private GTK child wrappers.
+- Disabled the unavailable accessibility bus in headless CI to remove unrelated GTK warnings.
+- Removed the unused `gstreamer-audio` dependency and synchronized the Flatpak offline source map.
+
 ## Release v0.3.0 — Portable Distribution & Secure Credentials — 23/11/2026
 
 - Added an official Flatpak manifest and offline Cargo source map for reproducible sandboxed builds.

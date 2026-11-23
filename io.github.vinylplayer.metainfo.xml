@@ -44,6 +44,11 @@
     <mediatype>audio/opus</mediatype>
   </provides>
   <releases>
+    <release version="0.3.1" date="2026-11-23">
+      <description>
+        <p>Repairs Flatpak release builds, makes the visual preview test independent of GTK widget internals, and removes an unused GStreamer dependency.</p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-11-23">
       <description>
         <p>Adds Flatpak packaging, automated release artifacts, graphical CI, startup metrics, and secure Last.fm credential storage.</p>

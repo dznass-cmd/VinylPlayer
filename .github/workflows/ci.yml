@@ -72,11 +72,13 @@ jobs:
       - name: Run ignored GTK and media integration tests
         env:
           GDK_BACKEND: x11
+          GTK_A11Y: none
           GST_AUDIO_SINK: fakesink
         run: dbus-run-session -- xvfb-run -a scripts/run-graphical-tests.sh
       - name: Measure cold startup and peak resident memory
         env:
           GDK_BACKEND: x11
+          GTK_A11Y: none
           GST_AUDIO_SINK: fakesink
           VINYLPLAYER_STARTUP_PROBE: "1"
           VINYLPLAYER_DISABLE_SECRET_STORE: "1"

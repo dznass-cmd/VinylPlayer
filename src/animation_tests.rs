@@ -1422,23 +1422,15 @@ fn render_professional_preview() {
         }
     }
     album_views.set_visible_child_name("covers");
-    let grid_widget = album_views
+    let covers = album_views
         .child_by_name("covers")
-        .unwrap()
-        .downcast::<gtk::ScrolledWindow>()
-        .unwrap()
-        .child()
-        .unwrap();
-    let grid = grid_widget
-        .clone()
+        .expect("Página de capas para a prévia");
+    let grid = descendants(&covers, |widget| widget.is::<gtk::FlowBox>())
+        .into_iter()
+        .next()
+        .expect("Grade de capas para a prévia")
         .downcast::<gtk::FlowBox>()
-        .unwrap_or_else(|_| {
-            grid_widget
-                .first_child()
-                .unwrap()
-                .downcast::<gtk::FlowBox>()
-                .unwrap()
-        });
+        .unwrap();
     let button = grid
         .child_at_index(0)
         .expect("Biblioteca para a prévia")

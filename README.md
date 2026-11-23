@@ -9,7 +9,7 @@ Crafted with **Rust**, **GTK4 / Libadwaita**, and **GStreamer / PipeWire**.
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![GTK4](https://img.shields.io/badge/GUI-GTK4%20%2F%20Libadwaita-blue?logo=gnome&logoColor=white)](https://gtk.org/)
 [![Audio](https://img.shields.io/badge/Audio-GStreamer%20%2F%20PipeWire-brightgreen)](https://pipewire.org/)
-[![Version](https://img.shields.io/badge/Version-0.3.0-purple.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/Version-0.3.1-purple.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/License-GPLv3-green.svg)](LICENSE)
 [![Arch Linux](https://img.shields.io/badge/Arch%20Linux-PKGBUILD%20Ready-1793d1?logo=arch-linux&logoColor=white)](packaging/arch/PKGBUILD)
 
