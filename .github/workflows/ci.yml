@@ -88,14 +88,14 @@ jobs:
           cargo build --release --locked
           dbus-run-session -- xvfb-run -a /usr/bin/time -v \
             -o startup-metrics.txt target/release/vinylplayer \
-            2>startup-output.txt
+            >startup-output.txt 2>&1
           cat startup-output.txt
           cat startup-metrics.txt
           {
             echo '### Startup benchmark'
             echo '```text'
-            grep -E 'VINYLPLAYER_STARTUP_MS' startup-output.txt
-            grep -E 'Elapsed|Maximum resident set size' startup-metrics.txt
+            grep -E 'VINYLPLAYER_STARTUP_MS' startup-output.txt || true
+            grep -E 'Elapsed|Maximum resident set size' startup-metrics.txt || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload visual test previews and metrics
