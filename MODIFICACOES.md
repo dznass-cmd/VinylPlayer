@@ -157,7 +157,7 @@ Registro atualizado em 23/11/2026.
 - **Smart Keyboard Shortcut Guard (`src/main.rs`):**
   - Updated the window-level `EventControllerKey` to ignore modified chords (`Ctrl`/`Alt`/`Super`) and yield propagation whenever focus is inside an editable input (`GtkText`, `GtkEntry`, `GtkSearchEntry`, `GtkPasswordEntry`, `GtkEditable`) or interactive slider/dropdown (`GtkScale`, `GtkDropDown`), preventing `Left`/`Right`/`Up`/`Down`/`Space` from hijacking track navigation or volume while typing or editing search queries.
 - **Portable Default Library Root Discovery (`src/state.rs`):**
-  - Replaced the hardcoded `/mnt/armazenamento/music` fallback in `AppState::library_roots` with `AppState::default_library_roots`, preserving automatic legacy migration when `/mnt/armazenamento/music` exists while cleanly falling back to `XDG_MUSIC_DIR` (`glib::user_special_dir`), `~/Music`, `~/Música`, or an empty list on fresh Linux installations.
+  - Replaced the hardcoded `legacy path` fallback in `AppState::library_roots` with `AppState::default_library_roots`, preserving automatic legacy migration when `legacy path` exists while cleanly falling back to `XDG_MUSIC_DIR` (`glib::user_special_dir`), `~/Music`, `~/Música`, or an empty list on fresh Linux installations.
 - **Full Multi-File, Folder & Playlist Drag-and-Drop (`src/main.rs`):**
   - Upgraded the window `DropTarget` to accept both `gdk::FileList` and URI lists and process all dropped items asynchronously via `gio::spawn_blocking`, supporting multiple audio files, `.m3u`/`.m3u8` playlists, and recursive folder scanning without blocking the GTK main loop.
 - **Non-Blocking Cover Extraction, Negative Caching & Alpha-Preserving LRU Thumbnails (`src/audio.rs`, `src/main.rs`, `src/thumb_cache.rs`):**
@@ -396,7 +396,7 @@ Registro atualizado em 23/11/2026.
 - Capturas conferidas: [busca](docs/busca-fila.png) e
   [sem resultados](docs/busca-fila-sem-resultados.png). Avisos do tema GTK já
   existentes; o FLAC de teste não tem capa e emite o aviso correspondente.
-- Release compilada, instalada em `/home/dznas/.local/bin/vinylplayer` e reaberta
+- Release compilada, instalada em `~/.local/bin/vinylplayer` e reaberta
   com o painel da fila. Release, arquivo instalado e processo em execução
   conferem com SHA-256
   `ca2f9b754c2192adbf052b89cf89164b29601185609fb8efd01294ceb944d773`.
@@ -444,7 +444,7 @@ Registro atualizado em 23/11/2026.
   [faixas](docs/adicionar-fila-faixa.png) e [álbum](docs/adicionar-fila-album.png).
   A prévia completa também conferiu a lista da biblioteca grande. Os avisos do
   tema GTK e os erros provocados no teste de recuperação são os já documentados.
-- Release compilado, instalado em `/home/dznas/.local/bin/vinylplayer` e reaberto.
+- Release compilado, instalado em `~/.local/bin/vinylplayer` e reaberto.
   Executável em execução, instalado e release têm SHA-256
   `5fbb37e574dde2c1388e7faf5e628b0f8f7c268fe7d12296575c901dc10f7467`.
   Preferências idênticas ao backup, incluindo fila, seleção e volume; MPRIS em
@@ -564,7 +564,7 @@ Registro atualizado em 23/11/2026.
   - Adicionado getter `AudioEngine::volume(&self) -> f64` consultando a propriedade do GStreamer playbin.
   - 56 testes unitários e de integração aprovados com 100% de sucesso (`cargo test --all-targets`).
   - Novos testes: `volume_hud_gauge_and_fade_calculation`, `draw_volume_hud_renders_without_panic`, `volume_getter_and_setter_clamp_properly` e `render_volume_hud_preview_to_file`.
-  - Binário Release oficial compilado e instalado em `/home/dznas/.local/bin/vinylplayer` (SHA-256: `fd80321088613c77d91ebb9f11e6f24522aa67d56be0488802a9c2ef06e4f92b`).
+  - Binário Release oficial compilado e instalado em `~/.local/bin/vinylplayer` (SHA-256: `fd80321088613c77d91ebb9f11e6f24522aa67d56be0488802a9c2ef06e4f92b`).
 
 ## Empacotamento Arch Linux atualizado (pkgrel=8) — 13/11/2026
 
@@ -644,7 +644,7 @@ Registro atualizado em 23/11/2026.
   - Captura gráfica de conferência gravada em `docs/toca-discos-rpm.png` e prévia em `tests/preview_professional.png`.
 
 - **Instalação:**
-  - Binário Release oficial compilado e instalado no sistema em `/home/dznas/.local/bin/vinylplayer` (SHA-256: `1aa3a0c6166f130ce33b9f958082cc6997fc49001b040651a0d04ddfbd7a15af`).
+  - Binário Release oficial compilado e instalado no sistema em `~/.local/bin/vinylplayer` (SHA-256: `1aa3a0c6166f130ce33b9f958082cc6997fc49001b040651a0d04ddfbd7a15af`).
 
 ## Erros de reprodução e recuperação — 13/11/2026
 
@@ -681,7 +681,7 @@ Registro atualizado em 23/11/2026.
 - Capturas conferidas: [arquivo ausente](docs/erro-arquivo-ausente.png) e
   [falha de reprodução](docs/erro-reproducao.png). Os logs de GStreamer no teste
   são esperados pelas falhas provocadas; os avisos do tema GTK são preexistentes.
-- Release instalado em `/home/dznas/.local/bin/vinylplayer` e aplicativo reaberto.
+- Release instalado em `~/.local/bin/vinylplayer` e aplicativo reaberto.
   Binário em execução, instalado e release conferem com SHA-256
   `5db0478a1075af28a33c3bb6783181372a76c169b59af34c5fa708631a1310ff`.
   Preferências idênticas ao backup, incluindo fila e volume; MPRIS em `Stopped`,
@@ -742,7 +742,7 @@ Registro atualizado em 23/11/2026.
   e [pasta indisponível](docs/pasta-indisponivel.png). Os avisos de parsing do tema
   GTK observados são os preexistentes na sessão; o teste de falha de salvamento
   produz deliberadamente mensagens de erro de gravação.
-- Release compilado, instalado em `/home/dznas/.local/bin/vinylplayer` e reaberto
+- Release compilado, instalado em `~/.local/bin/vinylplayer` e reaberto
   com a janela de pastas visível. Binário em execução, instalado e release têm
   SHA-256 `9f06b296f31cb3c1508c5d508a1fe2600a5f6c01c4b2e6cadfac84dd567821d7`.
   Conferência da sessão real: arquivo de preferências idêntico ao backup anterior
@@ -769,7 +769,7 @@ Registro atualizado em 23/11/2026.
   verifica arquivo ausente, escolha da próxima válida e da anterior, nenhuma
   entrada disponível, fila vazia persistida, volume/visão preservados e ausência
   de reprodução automática. Sinks silenciosos e configurações temporárias foram usados.
-- Release final compilado e instalado em `/home/dznas/.local/bin/vinylplayer`.
+- Release final compilado e instalado em `~/.local/bin/vinylplayer`.
   Executável em execução, instalado e release conferem com SHA-256
   `61b587d9ce1bf5d0a7836eeaafcdde78d00c5b6c97485770821c69c63775646f`.
   O aplicativo foi aberto com a fila visível. Auditoria da sessão real confirmou
@@ -872,7 +872,7 @@ Registro atualizado em 23/11/2026.
 - Capturas conferidas e salvas no projeto:
   [fila aberta](docs/fila-reproducao.png) e [fila vazia](docs/fila-vazia.png).
   Os avisos de parsing do tema GTK são os já existentes na sessão.
-- Release instalado em `/home/dznas/.local/bin/vinylplayer` e reaberto com o
+- Release instalado em `~/.local/bin/vinylplayer` e reaberto com o
   painel de fila exibido. Executável em execução, instalado e release conferem
   com SHA-256 `63c55ef1745c88be6692caf636134aa58879c69a6225f33fd7b1100574ccd21c`.
   Preferências permaneceram idênticas ao backup anterior ao reinício. Backup do
@@ -913,7 +913,7 @@ Registro atualizado em 23/11/2026.
   pertencem à sessão gráfica. Não impediram a aprovação do teste de abertura.
   O serviço de acessibilidade da sessão foi reiniciado após o teste em barramento
   separado para restaurar seu socket, cuja presença foi conferida.
-- Release compilado e instalado em `/home/dznas/.local/bin/vinylplayer`; o player
+- Release compilado e instalado em `~/.local/bin/vinylplayer`; o player
   foi reaberto com a versão atualizada. Executável instalado e release têm SHA-256
   `9b216783b6fa5bdc185aa61184bf1e4d118f5c1ab43f03eb5bf18d68da121230`.
   Backup do executável anterior, atalho e preferências em
@@ -943,7 +943,7 @@ Registro atualizado em 23/11/2026.
   uma causa específica à diferença binária nem executado o pacote nesta revisão.
 - `cargo check --offline`: aprovado. `cargo test --offline --release`: 33 testes
   aprovados e 4 especiais ignorados; os testes gráficos não foram repetidos.
-- O release local e `/home/dznas/.local/bin/vinylplayer` continuam idênticos,
+- O release local e `~/.local/bin/vinylplayer` continuam idênticos,
   com SHA-256 `59df0ca5d666f2d8966968a2fcfbfefa812b6db2cf98f54d1fe97fe7de4cdb04`.
 
 ### Pendência de integração identificada por inspeção
@@ -957,7 +957,7 @@ fluxo não foi executado, para não interferir na instância ativa.
 ## Empacotamento Arch Linux atualizado (pkgrel=7) — 13/11/2026
 
 - O workspace de empacotamento foi sincronizado em
-  `/home/dznas/.openmausbot/workspaces/4ec1e6a6-c70b-4bda-9c52-c4833b1b8578`.
+  `~/.openmausbot/workspaces/4ec1e6a6-c70b-4bda-9c52-c4833b1b8578`.
 - Declaradas dependências opcionais (`optdepends`) no `PKGBUILD`:
   - `ffmpeg`: leitura de metadados e tags avançadas com `ffprobe`.
   - `flac`: extração de capas embutidas em FLAC com `metaflac`.
@@ -1004,7 +1004,7 @@ fluxo não foi executado, para não interferir na instância ativa.
   `/tmp/vinylplayer-turntable-playing.png`.
 - Formatação de `src/main.rs` e compilação release: aprovadas. Não foi realizada
   medição de FPS nem validação visual de todas as resoluções possíveis.
-- A build e `/home/dznas/.local/bin/vinylplayer` foram sincronizados, com SHA-256
+- A build e `~/.local/bin/vinylplayer` foram sincronizados, com SHA-256
   `59df0ca5d666f2d8966968a2fcfbfefa812b6db2cf98f54d1fe97fe7de4cdb04`.
 - Binário anterior preservado temporariamente em
   `/tmp/vinylplayer-visual-backup.sotapA/vinylplayer`.
@@ -1065,7 +1065,7 @@ Arquivos alterados: `src/state.rs`, `src/main.rs` e este registro.
   SHA-256 `9cb437961ca3c36494a3814410741eb37ed0268ad0491fe40e7ae372b5118720`,
   modificado em `2026-11-13 04:46:20.225888509 -0300`, antes e depois dos testes.
 - `cargo build --offline --release`: aprovado. A build e o executável instalado
-  em `/home/dznas/.local/bin/vinylplayer` foram sincronizados e têm SHA-256
+  em `~/.local/bin/vinylplayer` foram sincronizados e têm SHA-256
   `b3f09600baca991e3b1faf339f692f2c4463777c65ce297473915fb82d1cbf27`.
 - A versão instalada anterior foi preservada temporariamente em
   `/tmp/vinylplayer-state-backup.KYrX3T/vinylplayer` (SHA-256 `c5726d17417a1684864870c41e1fe0d6a60048bfd77ce5afcc17b8ca0bceb604`).
@@ -1089,7 +1089,7 @@ Esta etapa foi uma verificação; não foram implementadas correções no códig
 - `cargo test --offline --release`: 27 testes aprovados e 3 especiais ignorados.
   Os testes gráficos e de arquivos com tags reais não foram repetidos nesta revisão.
 - `cargo build --offline --release`: aprovado, sem recompilação necessária.
-- `target/release/vinylplayer` e `/home/dznas/.local/bin/vinylplayer` são idênticos:
+- `target/release/vinylplayer` e `~/.local/bin/vinylplayer` são idênticos:
   SHA-256 `c5726d17417a1684864870c41e1fe0d6a60048bfd77ce5afcc17b8ca0bceb604`.
 - O executável atual é `vinylplayer`, conforme `Cargo.toml`. A build antiga
   `target/release/vinyl-player` ainda existe, mas não é a saída atual do Cargo.
@@ -1133,9 +1133,9 @@ e retirar a escrita de disco do loop gráfico.
 
 Este é o workspace escolhido para continuar o desenvolvimento:
 
-`/home/dznas/.openmausbot/workspaces/34c52fcf-61c2-42ab-8233-70938f131c8d`
+`~/.openmausbot/workspaces/34c52fcf-61c2-42ab-8233-70938f131c8d`
 
-Executável desta versão: `target/release/vinylplayer` (instalado e sincronizado em `/home/dznas/.local/bin/vinylplayer`).
+Executável desta versão: `target/release/vinylplayer` (instalado e sincronizado em `~/.local/bin/vinylplayer`).
 
 ## Sincronização do sistema, empacotamento e higienização — alteração mais recente
 

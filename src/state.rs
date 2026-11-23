@@ -139,10 +139,6 @@ impl AppState {
         self.theme.as_deref().unwrap_or("amber")
     }
     pub fn default_library_roots() -> Vec<PathBuf> {
-        let legacy = PathBuf::from("/mnt/armazenamento/music");
-        if legacy.is_dir() {
-            return vec![legacy];
-        }
         if let Some(music_dir) = glib::user_special_dir(glib::UserDirectory::Music) {
             if music_dir.is_dir() {
                 return vec![music_dir];
