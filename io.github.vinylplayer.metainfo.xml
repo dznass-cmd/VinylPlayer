@@ -44,6 +44,16 @@
     <mediatype>audio/opus</mediatype>
   </provides>
   <releases>
+    <release version="0.4.1" date="2026-11-28">
+      <description>
+        <p>Adds interactive mouse-draggable crossfader, selectable crossfade curves (Equal-Power, Long Smooth, Sharp Drop), intro silence cue trimming, Next button/hotkey Auto-DJ integration, up-next setlist preview, full-library background acoustic sweep, and inline empty-library feedback.</p>
+      </description>
+    </release>
+    <release version="0.4.0" date="2026-11-26">
+      <description>
+        <p>Introduces Auto-DJ Booth with dual-deck equal-power crossfading, random shuffle/party mix modes, and intelligent harmonic/vibe/energy-arc mixing backed by lightweight acoustic profiling.</p>
+      </description>
+    </release>
     <release version="0.3.1" date="2026-11-23">
       <description>
         <p>Repairs Flatpak release builds, makes the visual preview test independent of GTK widget internals, and removes an unused GStreamer dependency.</p>

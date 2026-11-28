@@ -239,6 +239,14 @@ impl Theme {
             .theme-btn:hover {{ background: rgba(255, 255, 255, 0.08); border-color: #55504a; }}
             .theme-btn.active {{ background: {bg}; border-color: {acc}; }}
             .theme-btn-check {{ color: {acc}; font-weight: bold; }}
+            .dj-button.active, .dj-button.active > button {{ color: {acc}; background: {bbg}; }}
+            .dj-button.active:hover, .dj-button.active > button:hover {{ color: {hov}; background: {bbor}; }}
+            .dj-mode-card.active {{ background: {bg}; border-color: {acc}; box-shadow: 0 0 0 1px {acc}; }}
+            .dj-status-pill.active {{ background: {bg}; border-color: {bor}; color: {acc}; }}
+            .dj-live-badge {{ background: {bg}; border-color: {bor}; color: {acc}; }}
+            .dj-live-badge:hover {{ background: {bor}; color: {hov}; }}
+            .dj-pill-btn:checked {{ background: {bg}; border-color: {bor}; color: {acc}; }}
+            .dj-badge-smart {{ background: {bbg}; border-color: {bbor}; color: {acc}; }}
             "#,
             label = self.label(),
             acc = acc,

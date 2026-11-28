@@ -1,4 +1,5 @@
 use crate::audio::RepeatMode;
+use crate::dj::{DjConfig, DjCrossfadeCurve, DjMixMode, DjPoolSource};
 use crate::playback_queue::QueueSnapshot;
 use gtk::gio::prelude::FileExt;
 use std::path::{Path, PathBuf};
@@ -104,6 +105,8 @@ pub struct AppState {
     pub notifications: bool,
     /// Idioma da interface ("en" ou "pt-BR"; None segue o idioma do sistema).
     pub language: Option<String>,
+    /// Configurações do modo DJ automático e crossfade.
+    pub dj: DjConfig,
 }
 
 impl Default for AppState {
@@ -130,6 +133,7 @@ impl Default for AppState {
             theme: None,
             notifications: true,
             language: None,
+            dj: DjConfig::default(),
         }
     }
 }
@@ -200,6 +204,13 @@ impl AppState {
             "theme": self.theme,
             "notifications": self.notifications,
             "language": self.language,
+            "dj_mode": self.dj.mode.id(),
+            "dj_pool": self.dj.pool.id(),
+            "dj_crossfade_secs": self.dj.crossfade_secs.clamp(0.0, 15.0),
+            "dj_curve": self.dj.curve.id(),
+            "dj_smart_cue": self.dj.smart_cue,
+            "dj_trim_intro": self.dj.trim_intro_silence,
+            "dj_tempo_match": self.dj.tempo_match,
         });
         if let Some(queue) = &self.queue {
             value["queue"] = queue.to_json();
@@ -229,7 +240,7 @@ impl AppState {
             state.volume = volume.clamp(0.0, 1.0);
         }
         if let Some(view) = value.get("active_view").and_then(|v| v.as_str()) {
-            if matches!(view, "overview" | "tracks" | "albums" | "playlists") {
+            if matches!(view, "overview" | "tracks" | "albums" | "playlists" | "dj") {
                 state.active_view = view.into();
             }
         }
@@ -291,6 +302,31 @@ impl AppState {
             .get("language")
             .and_then(|v| v.as_str())
             .map(String::from);
+        if let Some(m) = value.get("dj_mode").and_then(|v| v.as_str()) {
+            state.dj.mode = DjMixMode::from_id(m);
+        }
+        if let Some(p) = value.get("dj_pool").and_then(|v| v.as_str()) {
+            state.dj.pool = DjPoolSource::from_id(p);
+        }
+        if let Some(xf) = value
+            .get("dj_crossfade_secs")
+            .and_then(|v| v.as_f64())
+            .filter(|n| n.is_finite())
+        {
+            state.dj.crossfade_secs = xf.clamp(0.0, 15.0);
+        }
+        if let Some(cv) = value.get("dj_curve").and_then(|v| v.as_str()) {
+            state.dj.curve = DjCrossfadeCurve::from_id(cv);
+        }
+        if let Some(sc) = value.get("dj_smart_cue").and_then(|v| v.as_bool()) {
+            state.dj.smart_cue = sc;
+        }
+        if let Some(ti) = value.get("dj_trim_intro").and_then(|v| v.as_bool()) {
+            state.dj.trim_intro_silence = ti;
+        }
+        if let Some(tm) = value.get("dj_tempo_match").and_then(|v| v.as_bool()) {
+            state.dj.tempo_match = tm;
+        }
         state.last_track_path = value
             .get("last_track_path")
             .and_then(|v| v.as_str())
@@ -557,6 +593,10 @@ impl StateManager {
     pub fn update_language(&self, language: Option<String>) {
         self.update(|state| state.language = language);
     }
+    pub fn update_dj(&self, mut dj: DjConfig) {
+        dj.crossfade_secs = dj.crossfade_secs.clamp(0.0, 15.0);
+        self.update(|state| state.dj = dj);
+    }
     pub fn update_queue(&self, snapshot: QueueSnapshot) {
         let queue = SavedQueue {
             tracks: Arc::new(snapshot.tracks),
@@ -798,6 +838,15 @@ mod tests {
             theme: Some("emerald".into()),
             notifications: false,
             language: Some("pt-BR".into()),
+            dj: DjConfig {
+                mode: DjMixMode::SmartFlow,
+                pool: DjPoolSource::QueueOnly,
+                crossfade_secs: 8.5,
+                curve: DjCrossfadeCurve::LongFade,
+                smart_cue: false,
+                trim_intro_silence: false,
+                tempo_match: true,
+            },
         };
         let json = st.to_json();
         let restored = AppState::from_json(&json);
@@ -1247,5 +1296,32 @@ mod tests {
         let loaded2 = AppState::load_from(&config.path());
         assert!(loaded2.notifications);
         assert_eq!(loaded2.language.as_deref(), Some("en"));
+    }
+
+    #[test]
+    fn dj_config_roundtrip_persistence() {
+        let config = TestConfig::new();
+        let manager = StateManager::with_path(config.path());
+        assert_eq!(manager.snapshot().dj.mode, DjMixMode::Off);
+        manager.update_dj(DjConfig {
+            mode: DjMixMode::SmartJourney,
+            pool: DjPoolSource::QueueOnly,
+            crossfade_secs: 9.0,
+            curve: DjCrossfadeCurve::HardCut,
+            smart_cue: false,
+            trim_intro_silence: false,
+            tempo_match: true,
+        });
+        manager.update_active_view("dj");
+        manager.flush_now().unwrap();
+        let loaded = AppState::load_from(&config.path());
+        assert_eq!(loaded.active_view, "dj");
+        assert_eq!(loaded.dj.mode, DjMixMode::SmartJourney);
+        assert_eq!(loaded.dj.pool, DjPoolSource::QueueOnly);
+        assert!((loaded.dj.crossfade_secs - 9.0).abs() < 1e-6);
+        assert_eq!(loaded.dj.curve, DjCrossfadeCurve::HardCut);
+        assert!(!loaded.dj.smart_cue);
+        assert!(!loaded.dj.trim_intro_silence);
+        assert!(loaded.dj.tempo_match);
     }
 }

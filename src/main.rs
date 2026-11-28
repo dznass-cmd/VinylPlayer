@@ -68,6 +68,8 @@ pub(crate) fn show_system_notification(summary: &str, body: &str) {
 }
 
 mod audio;
+mod dj;
+mod dj_view;
 mod donate;
 mod file_open;
 mod i18n;
@@ -262,6 +264,7 @@ fn build_ui_with_catalog(
 
     let catalog = library_settings::Catalog::new(state_mgr.clone());
     let initial_tracks = catalog.report.borrow().tracks.clone();
+    let dj_ctrl = dj_view::DjController::new(audio.clone(), state_mgr.clone(), catalog.clone());
 
     let queue = queue_view::QueuePanel::new(&audio);
     let queue_split = adw::OverlaySplitView::builder()
@@ -306,6 +309,18 @@ fn build_ui_with_catalog(
     topbar.append(&queue_toggle);
     content.append(&topbar);
 
+    let dj_nav_btn_weak = nav_buttons
+        .iter()
+        .find(|(_, page, _)| *page == "dj")
+        .map(|(b, _, _)| b.downgrade());
+    let open_dj_from_stage = {
+        let dj_nav = dj_nav_btn_weak.clone();
+        move || {
+            if let Some(btn) = dj_nav.as_ref().and_then(|w| w.upgrade()) {
+                btn.emit_clicked();
+            }
+        }
+    };
     stack.add_named(
         &main_stage(
             &playing,
@@ -314,6 +329,8 @@ fn build_ui_with_catalog(
             &audio,
             &state_mgr,
             &volume_hud,
+            &dj_ctrl,
+            open_dj_from_stage,
         ),
         Some("overview"),
     );
@@ -342,6 +359,10 @@ fn build_ui_with_catalog(
     stack.add_named(
         &playlist_view::playlist_library_view(&audio, &playlist_mgr),
         Some("playlists"),
+    );
+    stack.add_named(
+        &dj_view::dj_booth_view(&dj_ctrl, &angle, &state_mgr),
+        Some("dj"),
     );
     let library_status = gtk::Label::new(Some(&catalog.summary()));
     library_status.set_xalign(0.0);
@@ -509,19 +530,25 @@ fn build_ui_with_catalog(
     });
     root.add_controller(drop);
 
-    // Bus integrado ao main loop do GTK
-    let bus = audio.element().bus().expect("bus GStreamer");
+    // Bus integrado ao main loop do GTK (ambos os decks para suportar crossfade Dual-Deck)
     let playback_errors = playback_error::ErrorPresenter::new(&audio);
-    let bus_errors = playback_errors.clone();
-    let audio_bus = audio.clone();
-    let playing_bus = playing.clone();
-    let bus_watch = bus
-        .add_watch_local(move |_, msg| {
+    let make_bus_watch = |deck_idx: usize, el: &gstreamer::Element| {
+        let bus = el.bus().expect("bus GStreamer");
+        let bus_errors = playback_errors.clone();
+        let audio_bus = audio.clone();
+        let playing_bus = playing.clone();
+        let dj_bus = dj_ctrl.clone();
+        bus.add_watch_local(move |_, msg| {
             use gstreamer::MessageView;
-            audio_bus.handle_message(msg);
+            audio_bus.handle_deck_message(deck_idx, msg);
+            let is_active = audio_bus.active_deck() == deck_idx;
             match msg.view() {
                 MessageView::StateChanged(s)
-                    if msg.src().map(|s| s == audio_bus.element()).unwrap_or(false) =>
+                    if is_active
+                        && msg
+                            .src()
+                            .map(|src| src == audio_bus.element())
+                            .unwrap_or(false) =>
                 {
                     match s.current() {
                         gstreamer::State::Playing => {
@@ -539,25 +566,37 @@ fn build_ui_with_catalog(
                         _ => {}
                     }
                 }
-                MessageView::Eos(..) => match audio_bus.advance_after_eos() {
-                    Ok(active) => playing_bus.set(active),
-                    Err(error) => {
-                        eprintln!("Reprodução do álbum: {error}");
-                        let _ = audio_bus.stop();
-                        playing_bus.set(false);
-                        bus_errors.show(&error.to_string());
+                MessageView::Eos(..) if is_active => {
+                    match dj_view::DjController::handle_eos_advance(&dj_bus) {
+                        Ok(active) => playing_bus.set(active),
+                        Err(error) => {
+                            eprintln!("Reprodução do álbum: {error}");
+                            let _ = audio_bus.stop();
+                            playing_bus.set(false);
+                            bus_errors.show(&error.to_string());
+                        }
                     }
-                },
+                }
                 MessageView::Error(e) => {
-                    eprintln!("GStreamer: {}", e.error());
-                    playing_bus.set(false);
-                    bus_errors.show(&e.error().to_string());
+                    eprintln!("GStreamer (deck {deck_idx}): {}", e.error());
+                    if is_active {
+                        audio_bus.cancel_crossfade();
+                        playing_bus.set(false);
+                        bus_errors.show(&e.error().to_string());
+                    } else if audio_bus.is_crossfading() {
+                        audio_bus.cancel_crossfade();
+                    }
                 }
                 _ => {}
             }
             glib::ControlFlow::Continue
         })
-        .expect("escutar eventos de áudio");
+        .expect("escutar eventos de áudio")
+    };
+    let bus_watch = (
+        make_bus_watch(0, audio.element()),
+        make_bus_watch(1, audio.aux_element()),
+    );
 
     let all_buttons: Vec<gtk::Button> = nav_buttons.iter().map(|(b, _, _)| b.clone()).collect();
     for (button, page, _title) in &nav_buttons {
@@ -594,6 +633,14 @@ fn build_ui_with_catalog(
     body.append(&nav);
     body.append(&content);
     root.append(&body);
+    let open_dj_for_bar = {
+        let dj_nav = dj_nav_btn_weak.clone();
+        move || {
+            if let Some(btn) = dj_nav.as_ref().and_then(|w| w.upgrade()) {
+                btn.emit_clicked();
+            }
+        }
+    };
     let (player_bar_widget, mute_btn, shuffle_btn, repeat_btn) = player_bar(
         &playing,
         &audio,
@@ -601,6 +648,8 @@ fn build_ui_with_catalog(
         &queue,
         &playback_errors,
         &volume_hud,
+        &dj_ctrl,
+        open_dj_for_bar,
     );
     root.append(&player_bar_widget);
 
@@ -707,9 +756,11 @@ fn build_ui_with_catalog(
     let bus_watch = RefCell::new(Some(bus_watch));
     let state_close = state_mgr.clone();
     let audio_close = audio.clone();
+    let dj_close = dj_ctrl.clone();
     window.connect_close_request(move |window| {
         // Captura inclusive uma edição feita depois do último tick de 250 ms.
         state_close.update_queue(audio_close.queue_snapshot());
+        dj_close.borrow_mut().engine.flush_cache_if_dirty();
         if let Err(error) = state_close.flush_now() {
             eprintln!("Could not save preferences on exit: {error}");
             let dialog = adw::MessageDialog::builder()
@@ -740,6 +791,7 @@ fn build_ui_with_catalog(
     // Atalhos ergonômicos de teclado (respeitando campos de texto e controles focados)
     let key_controller = gtk::EventControllerKey::new();
     let key_audio = audio.clone();
+    let key_dj = dj_ctrl.clone();
     let key_playing = playing.clone();
     let key_state = state_mgr.clone();
     let key_hud = volume_hud.clone();
@@ -755,6 +807,7 @@ fn build_ui_with_catalog(
                 gdk::Key::_2 => Some(1),
                 gdk::Key::_3 => Some(2),
                 gdk::Key::_4 => Some(3),
+                gdk::Key::_5 => Some(4),
                 _ => None,
             };
             if let Some(idx) = target_idx {
@@ -807,7 +860,7 @@ fn build_ui_with_catalog(
                     let target = (cur + 5_000_000).min(dur);
                     let _ = key_audio.seek_us(target);
                 } else {
-                    let _ = key_audio.next();
+                    let _ = dj_view::DjController::next_track(&key_dj);
                 }
                 glib::Propagation::Stop
             }
@@ -822,7 +875,7 @@ fn build_ui_with_catalog(
                 glib::Propagation::Stop
             }
             gdk::Key::Page_Down => {
-                let _ = key_audio.next();
+                let _ = dj_view::DjController::next_track(&key_dj);
                 glib::Propagation::Stop
             }
             gdk::Key::Page_Up => {
@@ -929,7 +982,7 @@ fn sidebar() -> (gtk::Widget, Vec<(gtk::Button, &'static str, &'static str)>) {
         &'static str,
     );
     let mut nav_buttons = Vec::new();
-    let items: [NavSpec; 4] = [
+    let items: [NavSpec; 5] = [
         (
             "media-optical-symbolic",
             |l| i18n::nav_title(l, "overview"),
@@ -953,6 +1006,12 @@ fn sidebar() -> (gtk::Widget, Vec<(gtk::Button, &'static str, &'static str)>) {
             |l| i18n::nav_title(l, "playlists"),
             |l| i18n::pick_for(l, "Playlists · Alt+4", "Playlists · Alt+4"),
             "playlists",
+        ),
+        (
+            "audio-headphones-symbolic",
+            |l| i18n::nav_title(l, "dj"),
+            |l| i18n::pick_for(l, "DJ Booth · Alt+5", "Cabine DJ · Alt+5"),
+            "dj",
         ),
     ];
 
@@ -2368,6 +2427,7 @@ fn header(
     (bar.upcast(), search, open)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn main_stage(
     playing: &Rc<Cell<bool>>,
     angle: &Rc<Cell<f64>>,
@@ -2375,6 +2435,8 @@ fn main_stage(
     audio: &Arc<AudioEngine>,
     state_mgr: &state::StateManager,
     volume_hud: &Rc<RefCell<VolumeHudState>>,
+    dj_ctrl: &Rc<RefCell<dj_view::DjController>>,
+    open_dj: impl Fn() + 'static,
 ) -> gtk::Widget {
     let initial_state = state_mgr.snapshot();
     let initial_rpm = initial_state.rpm;
@@ -2441,6 +2503,64 @@ fn main_stage(
 
     rpm_box.append(&btn_33);
     rpm_box.append(&btn_45);
+
+    let dj_pill_btn = gtk::Button::new();
+    dj_pill_btn.add_css_class("dj-live-badge");
+    let dj_pill_lbl = gtk::Label::new(Some("DJ"));
+    dj_pill_btn.set_child(Some(&dj_pill_lbl));
+    dj_pill_btn.connect_clicked(move |_| open_dj());
+    {
+        let pill_w = dj_pill_btn.downgrade();
+        let lbl_w = dj_pill_lbl.downgrade();
+        let update_pill = move |c: &dj_view::DjController, lang: i18n::Language| {
+            let cfg = c.config();
+            if let (Some(btn), Some(lbl)) = (pill_w.upgrade(), lbl_w.upgrade()) {
+                if let Some(xf) = c.audio.crossfade_snapshot() {
+                    btn.set_visible(true);
+                    btn.add_css_class("active");
+                    lbl.set_text(&format!(
+                        "DJ · {:.0}% → {}",
+                        xf.progress * 100.0,
+                        xf.incoming_meta.title
+                    ));
+                    btn.set_tooltip_text(Some(i18n::pick_for(
+                        lang,
+                        "Crossfade in progress · Open DJ Booth (Alt+5)",
+                        "Mixagem em andamento · Abrir Cabine DJ (Alt+5)",
+                    )));
+                } else if cfg.mode.is_active() {
+                    btn.set_visible(true);
+                    btn.add_css_class("active");
+                    lbl.set_text(&format!("DJ · {}", cfg.mode.short_label(lang)));
+                    btn.set_tooltip_text(Some(i18n::pick_for(
+                        lang,
+                        "Auto-DJ active · Click to open DJ Booth (Alt+5)",
+                        "Auto-DJ ativo · Clique para abrir a Cabine DJ (Alt+5)",
+                    )));
+                } else {
+                    btn.set_visible(true);
+                    btn.remove_css_class("active");
+                    lbl.set_text("DJ");
+                    btn.set_tooltip_text(Some(i18n::pick_for(
+                        lang,
+                        "Open DJ Booth (Alt+5)",
+                        "Abrir Cabine DJ (Alt+5)",
+                    )));
+                }
+            }
+        };
+        let up1 = update_pill.clone();
+        dj_view::DjController::connect(dj_ctrl, &dj_pill_btn, move |c| {
+            up1(c, i18n::current());
+        });
+        let dj_i18n = dj_ctrl.clone();
+        i18n::connect(&dj_pill_btn, move |lang| {
+            let c = dj_i18n.borrow();
+            update_pill(&c, lang);
+        });
+    }
+
+    heading.append(&dj_pill_btn);
     heading.append(&rpm_box);
     stage.append(&heading);
 
@@ -3219,6 +3339,7 @@ fn next_mute_toggle(cur_vol: f64, pre_mute: &Cell<f64>) -> f64 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn player_bar(
     playing: &Rc<Cell<bool>>,
     audio: &Arc<AudioEngine>,
@@ -3226,6 +3347,8 @@ fn player_bar(
     queue: &queue_view::QueuePanel,
     errors: &playback_error::ErrorPresenter,
     volume_hud: &Rc<RefCell<VolumeHudState>>,
+    dj_ctrl: &Rc<RefCell<dj_view::DjController>>,
+    open_dj: impl Fn() + 'static,
 ) -> (gtk::Widget, gtk::Button, gtk::Button, gtk::Button) {
     let bar = gtk::Box::new(Orientation::Horizontal, 20);
     bar.add_css_class("player-bar");
@@ -3334,12 +3457,14 @@ fn player_bar(
 
     update_shuffle_btn(&shuffle_btn, audio.shuffle());
     update_repeat_btn(&repeat_btn, audio.repeat_mode());
+    let dj_bar_btn = dj_view::build_dj_bar_button(dj_ctrl, open_dj);
 
     controls.append(&shuffle_btn);
     controls.append(&prev);
     controls.append(&toggle);
     controls.append(&next);
     controls.append(&repeat_btn);
+    controls.append(&dj_bar_btn);
     center_group.append(&controls);
 
     let shuffle_audio = audio.clone();
@@ -3384,9 +3509,9 @@ fn player_bar(
         let _ = prev_audio.prev();
     });
 
-    let next_audio = audio.clone();
+    let next_dj = dj_ctrl.clone();
     next.connect_clicked(move |_| {
-        let _ = next_audio.next();
+        let _ = dj_view::DjController::next_track(&next_dj);
     });
 
     // Barra de progresso (Seekbar) com tempos
@@ -3628,10 +3753,33 @@ fn player_bar(
         scrobbled: bool,
     }
     let current_scrobble = Rc::new(RefCell::new(ActiveScrobble::default()));
+    let tick_dj = dj_ctrl.clone();
+    let xfade_timer_running = Rc::new(Cell::new(false));
 
     glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
         if weak_bar.upgrade().is_none_or(|bar| !bar.is_realized()) {
             return glib::ControlFlow::Break;
+        }
+        dj_view::DjController::tick(&tick_dj);
+        if tick_audio.is_crossfading() && !xfade_timer_running.get() {
+            xfade_timer_running.set(true);
+            let x_audio = tick_audio.clone();
+            let x_flag = xfade_timer_running.clone();
+            let x_dj = tick_dj.clone();
+            let x_bar = weak_bar.clone();
+            glib::timeout_add_local(std::time::Duration::from_millis(33), move || {
+                if x_bar.upgrade().is_none() {
+                    x_flag.set(false);
+                    return glib::ControlFlow::Break;
+                }
+                if x_audio.step_crossfade().is_some() {
+                    glib::ControlFlow::Continue
+                } else {
+                    x_flag.set(false);
+                    dj_view::DjController::tick(&x_dj);
+                    glib::ControlFlow::Break
+                }
+            });
         }
         queue.refresh();
         errors.sync();
@@ -4333,6 +4481,75 @@ const BASE_CSS: &str = r#"
         }
         .mute-button {
             min-width: 30px; min-height: 30px; padding: 4px 6px;
+        }
+        .dj-button {
+            min-width: 44px; padding: 0; border-radius: 999px;
+        }
+        .dj-button > button {
+            background: transparent; border: none; border-radius: 999px;
+            padding: 4px 10px; min-height: 36px; color: inherit;
+        }
+        .dj-button > button:hover {
+            background: #2c2e31; color: #f4eee3;
+        }
+        .dj-bar-label {
+            font-size: 10px; font-weight: 800; letter-spacing: 0.7px; color: inherit;
+        }
+        .dj-popover contents {
+            background: #1b1d1f; border: 1px solid #3a3e43; border-radius: 12px; padding: 6px;
+        }
+        .dj-booth .dj-mode-card {
+            background: #1d1e21; border: 1px solid #32353a; border-radius: 11px;
+            padding: 10px 13px; transition: all 140ms ease;
+        }
+        .dj-booth .dj-mode-card:hover {
+            background: #24262a; border-color: #4f483d;
+        }
+        .dj-booth .dj-mode-card.active {
+            background: #302b24; border-color: #dfc08d;
+        }
+        .dj-status-pill {
+            background: #232528; border: 1px solid #36383c; border-radius: 999px;
+            padding: 3px 10px; font-size: 9px; font-weight: 700; letter-spacing: 1px; color: #9ea2a8;
+        }
+        .dj-status-pill.active {
+            background: #302b24; border-color: #494033; color: #dfc08d;
+        }
+        .dj-live-badge {
+            background: #1b1c1e; border: 1px solid #333538; border-radius: 999px;
+            padding: 4px 11px; font-size: 10px; font-weight: 700; color: #8b8e93;
+        }
+        .dj-live-badge.active {
+            background: #302b24; border-color: #534630; color: #dfc08d;
+        }
+        .dj-pill-group { background: #1b1c1e; border: 1px solid #333538; border-radius: 999px; padding: 2px; }
+        .dj-pill-btn { background: transparent; border: 1px solid transparent; border-radius: 999px; padding: 4px 10px; font-size: 10px; font-weight: 600; color: #8b8e93; min-height: 0; min-width: 0; }
+        .dj-pill-btn:checked { background: #302a20; border-color: #534630; color: #dfc08d; }
+        .dj-pill-btn:hover:not(:checked) { background: #25272a; color: #d0d2d6; }
+        .dj-badge-smart {
+            background: rgba(223, 192, 141, 0.16); border: 1px solid rgba(223, 192, 141, 0.38);
+            color: #dfc08d; border-radius: 999px; padding: 2px 7px; font-size: 8px; font-weight: 800; letter-spacing: 0.6px;
+        }
+        .dj-badge-random {
+            background: rgba(114, 179, 240, 0.15); border: 1px solid rgba(114, 179, 240, 0.35);
+            color: #7cc0ff; border-radius: 999px; padding: 2px 7px; font-size: 8px; font-weight: 800; letter-spacing: 0.6px;
+        }
+        .dj-notice-banner {
+            background: #23262b; border: 1px solid #3c424b; border-radius: 10px;
+            padding: 8px 12px; color: #d5d8de; font-size: 12px;
+        }
+        .dj-notice-banner.error {
+            background: rgba(185, 62, 62, 0.16); border-color: rgba(224, 92, 92, 0.45); color: #f4b8b8;
+        }
+        .dj-upnext-card {
+            padding: 12px 16px;
+        }
+        .dj-upnext-row {
+            background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(255, 255, 255, 0.055);
+            border-radius: 8px; padding: 6px 10px;
+        }
+        .dj-upnext-row:hover {
+            background: rgba(255, 255, 255, 0.05); border-color: rgba(255, 255, 255, 0.11);
         }
     "#;
 

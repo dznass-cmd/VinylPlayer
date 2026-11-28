@@ -1,6 +1,6 @@
 [package]
 name = "vinyl-player"
-version = "0.3.1"
+version = "0.4.1"
 edition = "2021"
 authors = ["Dzerivado <187990890+dznass-cmd@users.noreply.github.com>"]
 description = "Analog-inspired, lightweight, and native music player for the Linux desktop"

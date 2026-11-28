@@ -1873,3 +1873,98 @@ fn render_turntable_hero_gif() {
     assert!(status.success());
     assert!(std::path::Path::new("docs/turntable-demo.gif").exists());
 }
+
+#[test]
+#[ignore = "Requer sessão gráfica; valida modos DJ, mixagem Dual-Deck e gera /tmp/vinylplayer-dj-booth.png"]
+fn dj_booth_switches_modes_mixes_and_renders() {
+    gtk::init().unwrap();
+    let config = state::TestConfig::new();
+    std::fs::write(config.path(), r#"{"language": "en"}"#).unwrap();
+    let fixtures = silent_test_tracks(&config);
+    let manager = state::StateManager::with_path(config.path());
+    manager.update_library_folders(vec![config.path().parent().unwrap().to_path_buf()]);
+
+    let app = Application::builder()
+        .application_id("io.github.vinylplayer.djtest")
+        .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>).unwrap();
+    let (audio, catalog) = build_ui_with_catalog(&app, manager.clone());
+    let main_loop = glib::MainLoop::new(None, false);
+    wait_for_catalog(&catalog, &main_loop);
+
+    let silent_sink = gstreamer::ElementFactory::make("fakesink")
+        .property("sync", true)
+        .build()
+        .unwrap();
+    audio.element().set_property("audio-sink", &silent_sink);
+    audio.play_files(&fixtures, 0).unwrap();
+    wait_for_audio(&audio, &main_loop, gstreamer::State::Playing);
+
+    let window = app.active_window().unwrap();
+    let nav_btns = descendants(window.upcast_ref(), |w| w.has_css_class("nav-button"));
+    nav_btns
+        .into_iter()
+        .nth(4)
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap()
+        .emit_clicked();
+    settle(&main_loop);
+
+    let cards = descendants(window.upcast_ref(), |w| w.has_css_class("dj-mode-card"));
+    assert_eq!(cards.len(), 6);
+    // Activate Smart Flow (index 3: Off=0, RandomFlow=1, RandomParty=2, SmartFlow=3)
+    cards[3]
+        .downcast_ref::<gtk::ToggleButton>()
+        .unwrap()
+        .set_active(true);
+    settle(&main_loop);
+    assert_eq!(manager.snapshot().dj.mode, crate::dj::DjMixMode::SmartFlow);
+
+    // Click Mix Now and verify Dual-Deck crossfade activates cleanly
+    let mix_btns = descendants(window.upcast_ref(), |w| w.has_css_class("dj-mix-btn"));
+    assert_eq!(mix_btns.len(), 1);
+    mix_btns[0]
+        .downcast_ref::<gtk::Button>()
+        .unwrap()
+        .emit_clicked();
+    settle(&main_loop);
+    assert!(audio.is_crossfading());
+    save_preview(&window, "/tmp/vinylplayer-dj-booth.png");
+
+    // Finish crossfade and verify active deck swapped
+    audio.finish_crossfade();
+    settle(&main_loop);
+    assert!(!audio.is_crossfading());
+    assert_eq!(audio.active_deck(), 1);
+
+    // Switch Crossfade Curve pill to Sharp Drop (last of the 10 .dj-pill-btn widgets)
+    let pill_btns = descendants(window.upcast_ref(), |w| w.has_css_class("dj-pill-btn"));
+    assert_eq!(pill_btns.len(), 10);
+    pill_btns[9]
+        .downcast_ref::<gtk::ToggleButton>()
+        .unwrap()
+        .set_active(true);
+    settle(&main_loop);
+    assert_eq!(
+        manager.snapshot().dj.curve,
+        crate::dj::DjCrossfadeCurve::HardCut
+    );
+
+    // Switch to Random Flow
+    cards[1]
+        .downcast_ref::<gtk::ToggleButton>()
+        .unwrap()
+        .set_active(true);
+    settle(&main_loop);
+    assert_eq!(manager.snapshot().dj.mode, crate::dj::DjMixMode::RandomFlow);
+
+    window.close();
+    settle(&main_loop);
+    audio.element().set_state(gstreamer::State::Null).unwrap();
+    audio
+        .aux_element()
+        .set_state(gstreamer::State::Null)
+        .unwrap();
+}

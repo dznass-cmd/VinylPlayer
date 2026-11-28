@@ -9,10 +9,10 @@ Crafted with **Rust**, **GTK4 / Libadwaita**, and **GStreamer / PipeWire**.
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![GTK4](https://img.shields.io/badge/GUI-GTK4%20%2F%20Libadwaita-blue?logo=gnome&logoColor=white)](https://gtk.org/)
 [![Audio](https://img.shields.io/badge/Audio-GStreamer%20%2F%20PipeWire-brightgreen)](https://pipewire.org/)
-[![Version](https://img.shields.io/badge/Version-0.3.1-purple.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/Version-0.4.1-purple.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/License-GPLv3-green.svg)](LICENSE)
 [![Arch Linux](https://img.shields.io/badge/Arch%20Linux-PKGBUILD%20Ready-1793d1?logo=arch-linux&logoColor=white)](packaging/arch/PKGBUILD)
-[![Flatpak](https://img.shields.io/badge/Flatpak-v0.3.1%20Ready-4a90d9?logo=flatpak&logoColor=white)](https://github.com/dznass-cmd/VinylPlayer/releases/tag/v0.3.1)
+[![Flatpak](https://img.shields.io/badge/Flatpak-v0.4.1%20Ready-4a90d9?logo=flatpak&logoColor=white)](https://github.com/dznass-cmd/VinylPlayer/releases/tag/v0.4.1)
 
 <br/>
 
@@ -24,10 +24,11 @@ Crafted with **Rust**, **GTK4 / Libadwaita**, and **GStreamer / PipeWire**.
 
 ## ✨ Highlights & Features
 
-### 🎛️ Hi-Fi Analog Experience
+### 🎛️ Hi-Fi Analog Experience & Auto-DJ Booth
 - **Real-Time Cairo Turntable:** Vinyl platter and precision tonearm rendered in real-time with accurate angular physics and smooth vector graphics (VSync-locked via `FrameClock`).
 - **33 ⅓ & 45 RPM Speeds:** Dynamic speed selector toggle with authentic angular velocity (3.49 rad/s and 4.71 rad/s).
 - **Technics SL-1200 Aesthetics:** Brushed graphite chassis, beveled tactile buttons, rim stroboscope, quartz lock indicator, and an incandescent target light illuminating the record groove.
+- **Auto-DJ Booth (`Alt+5`) & Dual-Deck Crossfader:** True equal-power GStreamer dual-deck crossfading (`0s`–`12s`), **Random Mix Modes** (*Random Flow*, *Party Chaos*), and **Intelligent Mix Modes** (*Smart Flow*, *Seed Radio*, *Energy Journey*) powered by background BPM/energy analysis, Camelot harmonic key matching, `Smart Outro Cue`, and `Auto Tempo Blend`.
 - **Dynamic Center Label:** Rotating album cover artwork with typographic speed & track inscriptions.
 - **Smooth Needle Drop:** Authentic procedural acoustic vinyl needle drop sound effect triggered seamlessly when starting playback.
 - **Analog Stereo VU Meters:** Vintage backlit meters featuring true physical ballistics (300ms attack time and natural exponential decay).
@@ -114,8 +115,10 @@ To enable scrobbling, create an API account at [Last.fm](https://www.last.fm/api
 | <kbd>Home</kbd> | Seek to beginning of track (0:00) |
 | <kbd>m</kbd> | Mute / Unmute audio |
 | <kbd>Alt</kbd> + <kbd>1</kbd> | Switch to Overview (Turntable) view |
-| <kbd>Alt</kbd> + <kbd>2</kbd> | Switch to Albums collection view |
-| <kbd>Alt</kbd> + <kbd>3</kbd> | Switch to Playlists view |
+| <kbd>Alt</kbd> + <kbd>2</kbd> | Switch to Tracks view |
+| <kbd>Alt</kbd> + <kbd>3</kbd> | Switch to Albums collection view |
+| <kbd>Alt</kbd> + <kbd>4</kbd> | Switch to Playlists view |
+| <kbd>Alt</kbd> + <kbd>5</kbd> | Switch to Auto-DJ Booth view |
 | <kbd>Ctrl</kbd> + <kbd>j</kbd> | Toggle Playback Queue side panel |
 | <kbd>Ctrl</kbd> + <kbd>f</kbd> | Focus Playback Queue search field |
 | <kbd>Ctrl</kbd> + <kbd>o</kbd> | Open single audio track file dialog |

@@ -16,6 +16,9 @@ pub struct TrackTags {
     pub album: Option<String>,
     pub artist: Option<String>,
     pub year: Option<u32>,
+    pub genre: Option<String>,
+    pub bpm: Option<u32>,
+    pub initial_key: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,6 +67,19 @@ fn number(value: &str) -> Option<u32> {
         .filter(|n| *n > 0)
 }
 
+fn parse_bpm_value(value: &str) -> Option<u32> {
+    let cleaned = value
+        .trim()
+        .trim_end_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != ',')
+        .replace(',', ".");
+    let parsed = cleaned.parse::<f64>().ok()?;
+    if parsed.is_finite() && (25.0..=300.0).contains(&parsed) {
+        Some(parsed.round() as u32)
+    } else {
+        None
+    }
+}
+
 pub fn parse_tags(text: &str) -> TrackTags {
     let mut tags = TrackTags::default();
     for line in text.lines() {
@@ -99,13 +115,24 @@ pub fn parse_tags(text: &str) -> TrackTags {
             "date" | "year" if tags.year.is_none() => {
                 tags.year = parse_year(value);
             }
+            "genre" if !value.is_empty() && tags.genre.is_none() => {
+                tags.genre = Some(value.to_string());
+            }
+            "bpm" | "tbpm" | "tempo" | "fbpm" if tags.bpm.is_none() => {
+                tags.bpm = parse_bpm_value(value);
+            }
+            "initialkey" | "initial_key" | "tkey" | "key"
+                if !value.is_empty() && tags.initial_key.is_none() =>
+            {
+                tags.initial_key = Some(value.to_string());
+            }
             _ => {}
         }
     }
     tags
 }
 
-pub fn read_order(path: &Path) -> TrackTags {
+fn cache_info(path: &Path) -> (Option<String>, PathBuf) {
     let stamp = std::fs::metadata(path).ok().and_then(|m| {
         let time = m
             .modified()
@@ -113,7 +140,7 @@ pub fn read_order(path: &Path) -> TrackTags {
             .duration_since(std::time::UNIX_EPOCH)
             .ok()?;
         Some(format!(
-            "v3 {} {} {}",
+            "v4 {} {} {}",
             m.len(),
             time.as_secs(),
             time.subsec_nanos()
@@ -124,6 +151,23 @@ pub fn read_order(path: &Path) -> TrackTags {
     let cache = glib::user_cache_dir()
         .join("vinylplayer/track-order")
         .join(format!("{:x}.txt", hash.finish()));
+    (stamp, cache)
+}
+
+pub fn read_cached_tags(path: &Path) -> Option<TrackTags> {
+    let (stamp, cache) = cache_info(path);
+    let stamp = stamp?;
+    let saved = std::fs::read_to_string(&cache).ok()?;
+    let (saved_stamp, tags) = saved.split_once('\n')?;
+    if saved_stamp == stamp || saved_stamp.strip_prefix("v3 ") == stamp.strip_prefix("v4 ") {
+        Some(parse_tags(tags))
+    } else {
+        None
+    }
+}
+
+pub fn read_order(path: &Path) -> TrackTags {
+    let (stamp, cache) = cache_info(path);
     if let (Some(stamp), Ok(saved)) = (&stamp, std::fs::read_to_string(&cache)) {
         if let Some((saved_stamp, tags)) = saved.split_once('\n') {
             if saved_stamp == stamp {
@@ -138,7 +182,7 @@ pub fn read_order(path: &Path) -> TrackTags {
             "-threads",
             "1",
             "-show_entries",
-            "format_tags=title,track,tracknumber,disc,discnumber,album,artist,album_artist,albumartist,date,year:stream_tags=title,track,tracknumber,disc,discnumber,album,artist,album_artist,albumartist,date,year",
+            "format_tags=title,track,tracknumber,disc,discnumber,album,artist,album_artist,albumartist,date,year,genre,bpm,tbpm,tempo,fbpm,initialkey,initial_key,tkey,key:stream_tags=title,track,tracknumber,disc,discnumber,album,artist,album_artist,albumartist,date,year,genre,bpm,tbpm,tempo,fbpm,initialkey,initial_key,tkey,key",
             "-of",
             "default=noprint_wrappers=1",
             "-i",
@@ -610,5 +654,16 @@ mod tests {
         let (sorted_a, _) = order_tracks(a, |_| TrackTags::default());
         let (sorted_b, _) = order_tracks(b, |_| TrackTags::default());
         assert_eq!(sorted_a, sorted_b);
+    }
+
+    #[test]
+    fn parses_dj_tags_genre_bpm_and_key() {
+        let text = "TAG:GENRE=Progressive Rock\nTAG:TBPM=124.6 BPM\nTAG:INITIALKEY=8A";
+        let parsed = parse_tags(text);
+        assert_eq!(parsed.genre.as_deref(), Some("Progressive Rock"));
+        assert_eq!(parsed.bpm, Some(125));
+        assert_eq!(parsed.initial_key.as_deref(), Some("8A"));
+        assert_eq!(parse_bpm_value("92,4"), Some(92));
+        assert_eq!(parse_bpm_value("999"), None);
     }
 }

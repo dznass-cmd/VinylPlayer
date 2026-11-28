@@ -1,10 +1,14 @@
+use crate::dj::DjCrossfadeCurve;
 use crate::playback_queue::{PlaybackQueue, QueueSnapshot};
 use anyhow::{Context, Result};
 use gst::prelude::*;
 use gstreamer as gst;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering,
+};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
@@ -206,11 +210,64 @@ fn next_auto_index_from(queue: &PlaybackQueue, shuffle: bool, repeat: RepeatMode
     }
 }
 
+/// Returns equal-power crossfade gains `(outgoing, incoming)` for progress `t` in `[0.0..=1.0]`.
+#[allow(dead_code)]
+pub fn equal_power_gains(t: f64) -> (f64, f64) {
+    DjCrossfadeCurve::EqualPower.gains(t)
+}
+
+/// Returns crossfade gains `(outgoing, incoming)` for progress `t` using the chosen curve shape.
+pub fn crossfade_gains(t: f64, curve: DjCrossfadeCurve) -> (f64, f64) {
+    curve.gains(t)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ManualReleaseOutcome {
+    CancelledToDeckA,
+    HeldBlend(f64),
+    CompletedToDeckB,
+}
+
+#[derive(Clone, Debug)]
+pub struct CrossfadeSession {
+    pub outgoing_deck: usize,
+    pub incoming_deck: usize,
+    pub duration: Duration,
+    pub accumulated: Duration,
+    pub last_tick: Option<Instant>,
+    pub target_index: usize,
+    pub target_path: PathBuf,
+    pub blend_rate: Option<f64>,
+    pub base_rate: f64,
+    pub curve: DjCrossfadeCurve,
+    pub manual: bool,
+    pub reason_en: String,
+    pub reason_pt: String,
+    pub progress: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct CrossfadeSnapshot {
+    pub progress: f64,
+    #[allow(dead_code)]
+    pub outgoing_deck: usize,
+    #[allow(dead_code)]
+    pub incoming_deck: usize,
+    pub curve: DjCrossfadeCurve,
+    pub manual: bool,
+    pub incoming_meta: TrackMetadata,
+    pub reason_en: String,
+    pub reason_pt: String,
+}
+
 #[derive(Clone)]
 pub struct AudioEngine {
     playbin: gst::Element,
+    aux_playbin: gst::Element,
+    active_deck: Arc<AtomicUsize>,
     state: Arc<Mutex<PlaybackState>>,
     metadata: Arc<Mutex<TrackMetadata>>,
+    aux_metadata: Arc<Mutex<TrackMetadata>>,
     metadata_ver: Arc<AtomicU64>,
     attempts: Arc<AtomicU64>,
     track_seq: Arc<AtomicU64>,
@@ -219,7 +276,16 @@ pub struct AudioEngine {
     repeat_mode: Arc<AtomicU8>,
     level_l: Arc<AtomicU32>,
     level_r: Arc<AtomicU32>,
+    aux_level_l: Arc<AtomicU32>,
+    aux_level_r: Arc<AtomicU32>,
     rate: Arc<AtomicU32>,
+    master_volume: Arc<AtomicU32>,
+    deck_gain_0: Arc<AtomicU32>,
+    deck_gain_1: Arc<AtomicU32>,
+    pending_cue_0_us: Arc<AtomicI64>,
+    pending_cue_1_us: Arc<AtomicI64>,
+    crossfade: Arc<Mutex<Option<CrossfadeSession>>>,
+    crossfade_managed: Arc<AtomicBool>,
     pending_gapless: Arc<Mutex<Option<GaplessPending>>>,
 }
 
@@ -231,10 +297,16 @@ impl AudioEngine {
             .name("vinylplayer")
             .build()
             .context("plugin playbin3 ausente")?;
+        let aux_playbin = gst::ElementFactory::make("playbin3")
+            .name("vinylplayer-deck-b")
+            .build()
+            .context("plugin playbin3 aux ausente")?;
         // Keep conversion/resampling inside the audio sink.  This avoids
         // exposing FLAC caps (notably 24-bit/rates) directly to PipeWire.
         let sink = make_audio_sink()?;
         playbin.set_property("audio-sink", &sink);
+        let aux_sink = make_audio_sink()?;
+        aux_playbin.set_property("audio-sink", &aux_sink);
         let selected = if tracks.is_empty() {
             None
         } else {
@@ -244,8 +316,11 @@ impl AudioEngine {
         queue.current = selected;
         let engine = Self {
             playbin,
+            aux_playbin,
+            active_deck: Arc::new(AtomicUsize::new(0)),
             state: Default::default(),
             metadata: Default::default(),
+            aux_metadata: Default::default(),
             metadata_ver: Arc::new(AtomicU64::new(1)),
             attempts: Arc::new(AtomicU64::new(0)),
             track_seq: Arc::new(AtomicU64::new(0)),
@@ -254,7 +329,16 @@ impl AudioEngine {
             repeat_mode: Arc::new(AtomicU8::new(RepeatMode::Off.to_u8())),
             level_l: Arc::new(AtomicU32::new((-80.0f32).to_bits())),
             level_r: Arc::new(AtomicU32::new((-80.0f32).to_bits())),
+            aux_level_l: Arc::new(AtomicU32::new((-80.0f32).to_bits())),
+            aux_level_r: Arc::new(AtomicU32::new((-80.0f32).to_bits())),
             rate: Arc::new(AtomicU32::new((1.0f32).to_bits())),
+            master_volume: Arc::new(AtomicU32::new((1.0f32).to_bits())),
+            deck_gain_0: Arc::new(AtomicU32::new((1.0f32).to_bits())),
+            deck_gain_1: Arc::new(AtomicU32::new((0.0f32).to_bits())),
+            pending_cue_0_us: Arc::new(AtomicI64::new(0)),
+            pending_cue_1_us: Arc::new(AtomicI64::new(0)),
+            crossfade: Default::default(),
+            crossfade_managed: Arc::new(AtomicBool::new(false)),
             pending_gapless: Default::default(),
         };
         engine.connect_gapless();
@@ -265,53 +349,158 @@ impl AudioEngine {
         Ok(engine)
     }
 
-    fn connect_gapless(&self) {
-        let weak_playbin = self.playbin.downgrade();
-        let state = self.state.clone();
-        let queue = self.queue.clone();
-        let shuffle = self.shuffle.clone();
-        let repeat_mode = self.repeat_mode.clone();
-        let pending_gapless = self.pending_gapless.clone();
-        self.playbin.connect("about-to-finish", false, move |_| {
-            let pb = weak_playbin.upgrade()?;
-            if *state.lock().unwrap() == PlaybackState::Stopped {
-                return None;
+    pub fn active_deck(&self) -> usize {
+        self.active_deck.load(Ordering::Relaxed)
+    }
+
+    fn deck_el(&self, idx: usize) -> &gst::Element {
+        if idx == 0 {
+            &self.playbin
+        } else {
+            &self.aux_playbin
+        }
+    }
+
+    pub fn aux_element(&self) -> &gst::Element {
+        &self.aux_playbin
+    }
+
+    fn meta_arc(&self, idx: usize) -> &Arc<Mutex<TrackMetadata>> {
+        if idx == 0 {
+            &self.metadata
+        } else {
+            &self.aux_metadata
+        }
+    }
+
+    fn level_pair(&self, idx: usize) -> (&Arc<AtomicU32>, &Arc<AtomicU32>) {
+        if idx == 0 {
+            (&self.level_l, &self.level_r)
+        } else {
+            (&self.aux_level_l, &self.aux_level_r)
+        }
+    }
+
+    fn deck_gain_atom(&self, idx: usize) -> &Arc<AtomicU32> {
+        if idx == 0 {
+            &self.deck_gain_0
+        } else {
+            &self.deck_gain_1
+        }
+    }
+
+    fn pending_cue_atom(&self, idx: usize) -> &Arc<AtomicI64> {
+        if idx == 0 {
+            &self.pending_cue_0_us
+        } else {
+            &self.pending_cue_1_us
+        }
+    }
+
+    fn apply_deck_gain(&self, deck_idx: usize, gain: f64) {
+        let clamped = gain.clamp(0.0, 1.0);
+        self.deck_gain_atom(deck_idx)
+            .store((clamped as f32).to_bits(), Ordering::Relaxed);
+        let el = self.deck_el(deck_idx);
+        let master = self.volume();
+        if let Some(bin) = el
+            .property::<Option<gst::Element>>("audio-sink")
+            .and_then(|s| s.downcast::<gst::Bin>().ok())
+        {
+            if let Some(xfade_vol) = bin.by_name("xfade-vol") {
+                xfade_vol.set_property("volume", clamped);
+                el.set_property("volume", master);
+                return;
             }
-            let next_uri = {
-                // Use try_lock to prevent AB-BA deadlock while set_track holds queue
-                // and calls playbin.set_state(Ready) waiting on the streaming thread.
-                let mut guard = None;
-                for _ in 0..4 {
-                    if let Ok(q) = queue.try_lock() {
-                        guard = Some(q);
-                        break;
-                    }
-                    std::thread::yield_now();
-                }
-                let q = guard?;
-                let mut pending = pending_gapless.lock().unwrap();
-                if pending.is_some() {
+        }
+        el.set_property("volume", (master * clamped).clamp(0.0, 1.0));
+    }
+
+    pub fn set_crossfade_managed(&self, managed: bool) {
+        self.crossfade_managed.store(managed, Ordering::Relaxed);
+    }
+
+    pub fn is_crossfading(&self) -> bool {
+        self.crossfade.lock().unwrap().is_some()
+    }
+
+    pub fn crossfade_snapshot(&self) -> Option<CrossfadeSnapshot> {
+        let guard = self.crossfade.lock().unwrap();
+        let session = guard.as_ref()?;
+        let incoming_meta = self.meta_arc(session.incoming_deck).lock().unwrap().clone();
+        Some(CrossfadeSnapshot {
+            progress: session.progress,
+            outgoing_deck: session.outgoing_deck,
+            incoming_deck: session.incoming_deck,
+            curve: session.curve,
+            manual: session.manual,
+            incoming_meta,
+            reason_en: session.reason_en.clone(),
+            reason_pt: session.reason_pt.clone(),
+        })
+    }
+
+    fn connect_gapless(&self) {
+        for deck_idx in [0_usize, 1_usize] {
+            let el = self.deck_el(deck_idx);
+            let weak_playbin = el.downgrade();
+            let active_deck = self.active_deck.clone();
+            let state = self.state.clone();
+            let queue = self.queue.clone();
+            let shuffle = self.shuffle.clone();
+            let repeat_mode = self.repeat_mode.clone();
+            let pending_gapless = self.pending_gapless.clone();
+            let crossfade = self.crossfade.clone();
+            let crossfade_managed = self.crossfade_managed.clone();
+            el.connect("about-to-finish", false, move |_| {
+                if active_deck.load(Ordering::Relaxed) != deck_idx {
                     return None;
                 }
-                let idx = next_auto_index_from(
-                    &q,
-                    shuffle.load(Ordering::Relaxed),
-                    RepeatMode::from_u8(repeat_mode.load(Ordering::Relaxed)),
-                )?;
-                let path = q.tracks.get(idx)?.clone();
-                let uri = glib::filename_to_uri(&path, None).ok()?;
-                *pending = Some(GaplessPending {
-                    index: idx,
-                    path,
-                    uri: uri.to_string(),
-                });
-                Some(uri)
-            };
-            if let Some(uri) = next_uri {
-                pb.set_property("uri", &uri);
-            }
-            None
-        });
+                if crossfade_managed.load(Ordering::Relaxed)
+                    || crossfade.try_lock().is_ok_and(|c| c.is_some())
+                {
+                    return None;
+                }
+                let pb = weak_playbin.upgrade()?;
+                if *state.lock().unwrap() == PlaybackState::Stopped {
+                    return None;
+                }
+                let next_uri = {
+                    // Use try_lock to prevent AB-BA deadlock while set_track holds queue
+                    // and calls playbin.set_state(Ready) waiting on the streaming thread.
+                    let mut guard = None;
+                    for _ in 0..4 {
+                        if let Ok(q) = queue.try_lock() {
+                            guard = Some(q);
+                            break;
+                        }
+                        std::thread::yield_now();
+                    }
+                    let q = guard?;
+                    let mut pending = pending_gapless.lock().unwrap();
+                    if pending.is_some() {
+                        return None;
+                    }
+                    let idx = next_auto_index_from(
+                        &q,
+                        shuffle.load(Ordering::Relaxed),
+                        RepeatMode::from_u8(repeat_mode.load(Ordering::Relaxed)),
+                    )?;
+                    let path = q.tracks.get(idx)?.clone();
+                    let uri = glib::filename_to_uri(&path, None).ok()?;
+                    *pending = Some(GaplessPending {
+                        index: idx,
+                        path,
+                        uri: uri.to_string(),
+                    });
+                    Some(uri)
+                };
+                if let Some(uri) = next_uri {
+                    pb.set_property("uri", &uri);
+                }
+                None
+            });
+        }
     }
     pub fn load(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
@@ -321,14 +510,22 @@ impl AudioEngine {
         Ok(())
     }
 
-    fn apply_track_metadata(&self, path: &Path, expected_uri: String) {
+    fn apply_track_metadata_for(
+        &self,
+        deck_idx: usize,
+        path: &Path,
+        expected_uri: String,
+        notify_active: bool,
+    ) {
+        let meta_arc = self.meta_arc(deck_idx).clone();
         let initial_cover = if path.is_file() {
             match find_cached_or_local_cover(path) {
                 Ok(cover) => cover,
                 Err(cache_out) => {
                     let path_bg = path.to_path_buf();
-                    let meta_bg = self.metadata.clone();
+                    let meta_bg = meta_arc.clone();
                     let ver_bg = self.metadata_ver.clone();
+                    let active_bg = self.active_deck.clone();
                     let uri_bg = expected_uri.clone();
                     let _ = std::thread::Builder::new()
                         .name("vinyl-cover-extract".into())
@@ -338,7 +535,9 @@ impl AudioEngine {
                                 if m.uri == uri_bg && m.cover_path.is_none() {
                                     m.cover_path = Some(extracted);
                                     drop(m);
-                                    ver_bg.fetch_add(1, Ordering::Relaxed);
+                                    if active_bg.load(Ordering::Relaxed) == deck_idx {
+                                        ver_bg.fetch_add(1, Ordering::Relaxed);
+                                    }
                                 }
                             }
                         });
@@ -348,7 +547,7 @@ impl AudioEngine {
         } else {
             None
         };
-        let mut m = self.metadata.lock().unwrap();
+        let mut m = meta_arc.lock().unwrap();
         *m = TrackMetadata {
             uri: expected_uri,
             title: path
@@ -360,27 +559,29 @@ impl AudioEngine {
             ..Default::default()
         };
         drop(m);
-        self.metadata_ver.fetch_add(1, Ordering::Relaxed);
-        self.track_seq.fetch_add(1, Ordering::Relaxed);
+        if notify_active {
+            self.metadata_ver.fetch_add(1, Ordering::Relaxed);
+            self.track_seq.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
-    fn apply_current_rate(&self, pos_us: i64) {
-        let cur_rate = self.rate();
-        if (cur_rate - 1.0).abs() > 0.002 {
+    fn apply_current_rate_to(&self, deck_idx: usize, pos_us: i64, target_rate: f64) {
+        if (target_rate - 1.0).abs() > 0.002 {
             let pos = (pos_us.max(0) as u64).saturating_mul(1000);
             let seek_event = gst::event::Seek::new(
-                cur_rate,
+                target_rate,
                 gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
                 gst::SeekType::Set,
                 gst::ClockTime::from_nseconds(pos),
                 gst::SeekType::None,
                 gst::ClockTime::NONE,
             );
-            let _ = self.playbin.send_event(seek_event);
+            let _ = self.deck_el(deck_idx).send_event(seek_event);
         }
     }
 
     fn commit_pending_gapless(&self, apply_rate: bool) {
+        let active = self.active_deck();
         let committed = {
             let mut queue = self.queue.lock().unwrap();
             let Some(pending) = self.pending_gapless.lock().unwrap().take() else {
@@ -396,33 +597,390 @@ impl AudioEngine {
             }
             pending
         };
-        self.apply_track_metadata(&committed.path, committed.uri);
+        self.apply_track_metadata_for(active, &committed.path, committed.uri, true);
         let d = self
-            .playbin
+            .deck_el(active)
             .query_duration::<gst::ClockTime>()
             .map(|v| v.nseconds() as i64 / 1000)
             .unwrap_or(0);
         if d > 0 {
-            self.metadata.lock().unwrap().duration_us = d;
+            self.meta_arc(active).lock().unwrap().duration_us = d;
             self.metadata_ver.fetch_add(1, Ordering::Relaxed);
         }
         if apply_rate {
-            self.apply_current_rate(0);
+            self.apply_current_rate_to(active, 0, self.rate());
         }
     }
 
+    fn cancel_crossfade_internal(&self) {
+        let taken = self.crossfade.lock().unwrap().take();
+        if let Some(session) = taken {
+            self.apply_deck_gain(session.incoming_deck, 0.0);
+            let in_el = self.deck_el(session.incoming_deck);
+            if let Some(bus) = in_el.bus() {
+                bus.set_flushing(true);
+                let _ = in_el.set_state(gst::State::Null);
+                bus.set_flushing(false);
+            } else {
+                let _ = in_el.set_state(gst::State::Null);
+            }
+            let (l, r) = self.level_pair(session.incoming_deck);
+            l.store((-80.0f32).to_bits(), Ordering::Relaxed);
+            r.store((-80.0f32).to_bits(), Ordering::Relaxed);
+            *self.meta_arc(session.incoming_deck).lock().unwrap() = TrackMetadata::default();
+            self.apply_deck_gain(self.active_deck(), 1.0);
+        }
+    }
+
+    pub fn cancel_crossfade(&self) {
+        self.cancel_crossfade_internal();
+    }
+
+    /// Starts a dual-deck crossfade using the default Equal-Power curve.
+    #[allow(dead_code)]
+    pub fn start_crossfade(
+        &self,
+        target_index: usize,
+        target_path: &Path,
+        duration_secs: f64,
+        blend_rate: Option<f64>,
+        reason_en: String,
+        reason_pt: String,
+    ) -> Result<()> {
+        self.start_crossfade_with_options(
+            target_index,
+            target_path,
+            duration_secs,
+            blend_rate,
+            DjCrossfadeCurve::EqualPower,
+            0,
+            false,
+            0.0,
+            reason_en,
+            reason_pt,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_crossfade_with_options(
+        &self,
+        target_index: usize,
+        target_path: &Path,
+        duration_secs: f64,
+        blend_rate: Option<f64>,
+        curve: DjCrossfadeCurve,
+        cue_in_us: i64,
+        manual: bool,
+        initial_progress: f64,
+        reason_en: String,
+        reason_pt: String,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            self.state() == PlaybackState::Playing,
+            "Crossfade requires active playback"
+        );
+        anyhow::ensure!(
+            !self.is_crossfading(),
+            "A crossfade transition is already in progress"
+        );
+        let uri = glib::filename_to_uri(target_path, None).context("converter caminho para URI")?;
+        let outgoing = self.active_deck();
+        let incoming = 1 - outgoing;
+        *self.pending_gapless.lock().unwrap() = None;
+        self.pending_cue_atom(incoming)
+            .store(cue_in_us.max(0), Ordering::Relaxed);
+
+        // If the outgoing deck was overridden with a test fakesink, mirror fakesink onto incoming.
+        let out_sink_is_fake = self
+            .deck_el(outgoing)
+            .property::<Option<gst::Element>>("audio-sink")
+            .and_then(|s| s.factory().map(|f| f.name() == "fakesink"))
+            .unwrap_or(false);
+        let in_el = self.deck_el(incoming);
+        if out_sink_is_fake {
+            if let Ok(fake) = gst::ElementFactory::make("fakesink")
+                .property("sync", true)
+                .build()
+            {
+                let _ = in_el.set_state(gst::State::Null);
+                in_el.set_property("audio-sink", &fake);
+            }
+        }
+
+        if let Some(bus) = in_el.bus() {
+            bus.set_flushing(true);
+            let _ = in_el.set_state(gst::State::Ready);
+            bus.set_flushing(false);
+        } else {
+            let _ = in_el.set_state(gst::State::Ready);
+        }
+
+        let t0 = initial_progress.clamp(0.0, 1.0);
+        let (g_out, g_in) = crossfade_gains(t0, curve);
+        self.apply_deck_gain(outgoing, g_out);
+        self.apply_deck_gain(incoming, g_in);
+        in_el.set_property("uri", &uri);
+        self.apply_track_metadata_for(incoming, target_path, uri.to_string(), false);
+
+        let base_rate = self.rate();
+        let duration = Duration::from_secs_f64(duration_secs.clamp(0.5, 15.0));
+        let accumulated = Duration::from_secs_f64(duration.as_secs_f64() * t0);
+        let session = CrossfadeSession {
+            outgoing_deck: outgoing,
+            incoming_deck: incoming,
+            duration,
+            accumulated,
+            last_tick: Some(Instant::now()),
+            target_index,
+            target_path: target_path.to_path_buf(),
+            blend_rate,
+            base_rate,
+            curve,
+            manual,
+            reason_en,
+            reason_pt,
+            progress: t0,
+        };
+        *self.crossfade.lock().unwrap() = Some(session);
+
+        if let Err(err) = in_el.set_state(gst::State::Playing) {
+            self.pending_cue_atom(incoming).store(0, Ordering::Relaxed);
+            self.cancel_crossfade_internal();
+            return Err(anyhow::anyhow!("iniciar deck B crossfade: {err:?}"));
+        }
+        if let Some(rate) = blend_rate.or_else(|| {
+            if (base_rate - 1.0).abs() > 0.002 {
+                Some(base_rate)
+            } else {
+                None
+            }
+        }) {
+            self.apply_current_rate_to(incoming, 0, rate);
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_manual_crossfade(
+        &self,
+        target_index: usize,
+        target_path: &Path,
+        progress: f64,
+        curve: DjCrossfadeCurve,
+        blend_rate: Option<f64>,
+        cue_in_us: i64,
+        reason_en: String,
+        reason_pt: String,
+    ) -> Result<()> {
+        let clamped = progress.clamp(0.0, 1.0);
+        if !self.is_crossfading() {
+            return self.start_crossfade_with_options(
+                target_index,
+                target_path,
+                6.0,
+                blend_rate,
+                curve,
+                cue_in_us,
+                true,
+                clamped,
+                reason_en,
+                reason_pt,
+            );
+        }
+        let (out_d, in_d, effective_curve) = {
+            let mut guard = self.crossfade.lock().unwrap();
+            let session = guard.as_mut().unwrap();
+            session.manual = true;
+            session.curve = curve;
+            session.progress = clamped;
+            session.accumulated = Duration::from_secs_f64(session.duration.as_secs_f64() * clamped);
+            session.last_tick = Some(Instant::now());
+            (session.outgoing_deck, session.incoming_deck, session.curve)
+        };
+        let (g_out, g_in) = crossfade_gains(clamped, effective_curve);
+        self.apply_deck_gain(out_d, g_out);
+        self.apply_deck_gain(in_d, g_in);
+        Ok(())
+    }
+
+    pub fn release_manual_crossfade(&self) -> ManualReleaseOutcome {
+        let progress = self.crossfade.lock().unwrap().as_ref().map(|s| s.progress);
+        let Some(p) = progress else {
+            return ManualReleaseOutcome::CancelledToDeckA;
+        };
+        if p <= 0.14 {
+            self.cancel_crossfade_internal();
+            ManualReleaseOutcome::CancelledToDeckA
+        } else if p >= 0.86 {
+            self.finish_crossfade();
+            ManualReleaseOutcome::CompletedToDeckB
+        } else {
+            ManualReleaseOutcome::HeldBlend(p)
+        }
+    }
+
+    pub fn resume_crossfade(&self, duration_secs: f64, curve: DjCrossfadeCurve) -> bool {
+        let mut guard = self.crossfade.lock().unwrap();
+        let Some(session) = guard.as_mut() else {
+            return false;
+        };
+        let dur = Duration::from_secs_f64(duration_secs.clamp(0.5, 15.0));
+        session.curve = curve;
+        session.manual = false;
+        session.duration = dur;
+        session.accumulated = Duration::from_secs_f64(dur.as_secs_f64() * session.progress);
+        session.last_tick = Some(Instant::now());
+        true
+    }
+
+    pub fn update_crossfade_curve(&self, curve: DjCrossfadeCurve) {
+        let gains = {
+            let mut guard = self.crossfade.lock().unwrap();
+            let Some(session) = guard.as_mut() else {
+                return;
+            };
+            session.curve = curve;
+            let (go, gi) = crossfade_gains(session.progress, curve);
+            (session.outgoing_deck, session.incoming_deck, go, gi)
+        };
+        self.apply_deck_gain(gains.0, gains.2);
+        self.apply_deck_gain(gains.1, gains.3);
+    }
+
+    /// Advances active crossfade gains and promotes incoming deck upon completion.
+    /// Returns `Some(progress)` while crossfading, `None` when idle or just finished.
+    pub fn step_crossfade(&self) -> Option<f64> {
+        let mut finish_now = false;
+        let progress_res = {
+            let mut guard = self.crossfade.lock().unwrap();
+            let session = guard.as_mut()?;
+            if session.manual {
+                let t = session.progress.clamp(0.0, 1.0);
+                let (g_out, g_in) = crossfade_gains(t, session.curve);
+                let out_d = session.outgoing_deck;
+                let in_d = session.incoming_deck;
+                drop(guard);
+                self.apply_deck_gain(out_d, g_out);
+                self.apply_deck_gain(in_d, g_in);
+                return Some(t);
+            }
+            let now = Instant::now();
+            if self.state() == PlaybackState::Playing {
+                if let Some(last) = session.last_tick {
+                    session.accumulated =
+                        session.accumulated.saturating_add(now.duration_since(last));
+                }
+                session.last_tick = Some(now);
+            } else {
+                session.last_tick = None;
+            }
+            let t = (session.accumulated.as_secs_f64() / session.duration.as_secs_f64().max(0.1))
+                .clamp(0.0, 1.0);
+            session.progress = t;
+            let (g_out, g_in) = crossfade_gains(t, session.curve);
+            let out_d = session.outgoing_deck;
+            let in_d = session.incoming_deck;
+            drop(guard);
+
+            self.apply_deck_gain(out_d, g_out);
+            self.apply_deck_gain(in_d, g_in);
+
+            if t >= 1.0 {
+                finish_now = true;
+                None
+            } else {
+                Some(t)
+            }
+        };
+
+        if finish_now {
+            self.finish_crossfade();
+            return None;
+        }
+        progress_res
+    }
+
+    pub fn finish_crossfade(&self) {
+        let Some(session) = self.crossfade.lock().unwrap().take() else {
+            return;
+        };
+        self.apply_deck_gain(session.incoming_deck, 1.0);
+        self.apply_deck_gain(session.outgoing_deck, 0.0);
+
+        {
+            let mut queue = self.queue.lock().unwrap();
+            if queue.tracks.get(session.target_index) == Some(&session.target_path) {
+                queue.current = Some(session.target_index);
+            } else if let Some(pos) = queue.tracks.iter().position(|p| p == &session.target_path) {
+                queue.current = Some(pos);
+            }
+        }
+
+        self.active_deck
+            .store(session.incoming_deck, Ordering::Relaxed);
+
+        let out_el = self.deck_el(session.outgoing_deck);
+        if let Some(bus) = out_el.bus() {
+            bus.set_flushing(true);
+            let _ = out_el.set_state(gst::State::Null);
+            bus.set_flushing(false);
+        } else {
+            let _ = out_el.set_state(gst::State::Null);
+        }
+        let (ol, or) = self.level_pair(session.outgoing_deck);
+        ol.store((-80.0f32).to_bits(), Ordering::Relaxed);
+        or.store((-80.0f32).to_bits(), Ordering::Relaxed);
+        *self.meta_arc(session.outgoing_deck).lock().unwrap() = TrackMetadata::default();
+
+        // Refresh duration & restore base playback rate smoothly once soloed on incoming deck.
+        let d = self
+            .deck_el(session.incoming_deck)
+            .query_duration::<gst::ClockTime>()
+            .map(|v| v.nseconds() as i64 / 1000)
+            .unwrap_or(0);
+        if d > 0 {
+            self.meta_arc(session.incoming_deck)
+                .lock()
+                .unwrap()
+                .duration_us = d;
+        }
+        if let Some(br) = session.blend_rate {
+            if (br - session.base_rate).abs() > 0.002 {
+                let pos = self.position_us();
+                self.apply_current_rate_to(session.incoming_deck, pos, session.base_rate);
+            }
+        }
+
+        self.metadata_ver.fetch_add(1, Ordering::Relaxed);
+        self.track_seq.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn set_track(&self, path: &Path) -> Result<()> {
+        self.set_track_with_cue(path, 0)
+    }
+
+    fn set_track_with_cue(&self, path: &Path, cue_in_us: i64) -> Result<()> {
+        self.cancel_crossfade_internal();
         let uri = glib::filename_to_uri(path, None).context("converter caminho para URI")?;
+        let active = self.active_deck();
+        let el = self.deck_el(active);
         // playbin can reject a URI change while PAUSED/PLAYING.  READY keeps
         // the sink alive while fully releasing the previous stream.
-        let bus = self.playbin.bus().expect("bus do player");
-        bus.set_flushing(true);
-        let ready = self.playbin.set_state(gst::State::Ready);
-        bus.set_flushing(false);
-        ready.map_err(|e| anyhow::anyhow!("preparar nova faixa: {e:?}"))?;
+        if let Some(bus) = el.bus() {
+            bus.set_flushing(true);
+            let ready = el.set_state(gst::State::Ready);
+            bus.set_flushing(false);
+            ready.map_err(|e| anyhow::anyhow!("preparar nova faixa: {e:?}"))?;
+        } else {
+            el.set_state(gst::State::Ready)
+                .map_err(|e| anyhow::anyhow!("preparar nova faixa: {e:?}"))?;
+        }
         *self.pending_gapless.lock().unwrap() = None;
-        self.playbin.set_property("uri", &uri);
-        self.apply_track_metadata(path, uri.to_string());
+        self.pending_cue_atom(active)
+            .store(cue_in_us.max(0), Ordering::Relaxed);
+        self.apply_deck_gain(active, 1.0);
+        el.set_property("uri", &uri);
+        self.apply_track_metadata_for(active, path, uri.to_string(), true);
         Ok(())
     }
 
@@ -450,6 +1008,43 @@ impl AudioEngine {
         self.queue.lock().unwrap().snapshot()
     }
 
+    pub fn current_track_path(&self) -> Option<PathBuf> {
+        let q = self.queue.lock().unwrap();
+        q.current.and_then(|i| q.tracks.get(i)).cloned()
+    }
+
+    pub fn replace_upcoming_tracks(&self, upcoming: &[PathBuf]) -> Result<()> {
+        let mut q = self.queue.lock().unwrap();
+        let mut base = if let Some(cur) = q.current {
+            if cur < q.tracks.len() {
+                vec![q.tracks[cur].clone()]
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+        let has_current = !base.is_empty();
+        base.extend(
+            upcoming
+                .iter()
+                .filter(|p| p.is_absolute() && p.is_file())
+                .cloned(),
+        );
+        if base.is_empty() {
+            return Ok(());
+        }
+        *self.pending_gapless.lock().unwrap() = None;
+        if has_current {
+            self.cancel_crossfade_internal();
+            q.replace(&base, 0);
+        } else {
+            self.set_track(&base[0])?;
+            q.replace(&base, 0);
+        }
+        Ok(())
+    }
+
     /// Amplia a fila sem recarregar o stream atual ou modificar play/pausa.
     pub fn enqueue_files(&self, tracks: &[PathBuf], next: bool) -> Result<()> {
         anyhow::ensure!(
@@ -467,6 +1062,23 @@ impl AudioEngine {
         }
         queue.enqueue(tracks, next);
         Ok(())
+    }
+
+    /// Inserts `path` immediately after the current track (used by Auto-DJ Library Auto-Fill)
+    /// and returns its index in the updated queue without interrupting active audio.
+    pub fn enqueue_dj_track(&self, path: &Path) -> Result<usize> {
+        anyhow::ensure!(
+            path.is_absolute() && path.is_file(),
+            "DJ track is not an available local file"
+        );
+        let mut queue = self.queue.lock().unwrap();
+        let empty = queue.tracks.is_empty();
+        let insert_idx = queue.current.map_or(0, |i| i + 1);
+        queue.enqueue(std::slice::from_ref(&path.to_path_buf()), true);
+        if empty {
+            self.set_track(path)?;
+        }
+        Ok(insert_idx.min(queue.tracks.len().saturating_sub(1)))
     }
 
     /// Descoberta inicial não substitui uma fila recebida enquanto o worker trabalhava.
@@ -491,6 +1103,15 @@ impl AudioEngine {
     }
 
     pub fn play_queue_item(&self, revision: u64, index: usize) -> Result<()> {
+        self.play_queue_item_with_cue(revision, index, 0)
+    }
+
+    pub fn play_queue_item_with_cue(
+        &self,
+        revision: u64,
+        index: usize,
+        cue_in_us: i64,
+    ) -> Result<()> {
         let mut queue = self.queue.lock().unwrap();
         anyhow::ensure!(
             queue.accepts(revision, index),
@@ -499,7 +1120,7 @@ impl AudioEngine {
                 "A fila mudou. Tente novamente."
             )
         );
-        self.set_track(&queue.tracks[index])?;
+        self.set_track_with_cue(&queue.tracks[index], cue_in_us)?;
         queue.current = Some(index);
         self.play()
     }
@@ -535,11 +1156,12 @@ impl AudioEngine {
                 self.set_track(&queue.tracks[current])?;
                 self.resume_after_load(previous)?;
             } else {
-                self.playbin
+                self.cancel_crossfade_internal();
+                self.active_element()
                     .set_state(gst::State::Null)
                     .map_err(|e| anyhow::anyhow!("esvaziar reprodução: {e:?}"))?;
                 self.set_state(PlaybackState::Stopped);
-                *self.metadata.lock().unwrap() = TrackMetadata::default();
+                *self.meta_arc(self.active_deck()).lock().unwrap() = TrackMetadata::default();
                 self.metadata_ver.fetch_add(1, Ordering::Relaxed);
             }
         } else {
@@ -584,6 +1206,10 @@ impl AudioEngine {
 
     /// Avança automaticamente respeitando RepeatMode e Shuffle.
     pub fn advance_after_eos(&self) -> Result<bool> {
+        if self.is_crossfading() {
+            self.finish_crossfade();
+            return Ok(true);
+        }
         let mut queue = self.queue.lock().unwrap();
         *self.pending_gapless.lock().unwrap() = None;
         let next_idx = next_auto_index_from(&queue, self.shuffle(), self.repeat_mode());
@@ -600,6 +1226,7 @@ impl AudioEngine {
 
     /// Recuperação de erro não repete nem embaralha: avança na ordem da fila.
     pub fn skip_failed_track(&self) -> Result<bool> {
+        self.cancel_crossfade_internal();
         let mut queue = self.queue.lock().unwrap();
         let next = queue
             .current
@@ -641,7 +1268,7 @@ impl AudioEngine {
         self.resume_after_load(previous)
     }
     pub fn search_and_load(&self, query: &str) -> Option<PathBuf> {
-        let was_playing = self.playbin.current_state() == gst::State::Playing;
+        let was_playing = self.active_element().current_state() == gst::State::Playing;
         let found = find_track(&self.queue.lock().unwrap().tracks, query)?;
         let _ = self.load(&found);
         if was_playing {
@@ -651,35 +1278,48 @@ impl AudioEngine {
     }
 
     pub fn play(&self) -> Result<()> {
-        if self.metadata.lock().unwrap().uri.is_empty() {
+        let active = self.active_deck();
+        if self.meta_arc(active).lock().unwrap().uri.is_empty() {
             return Ok(());
         }
         self.attempts.fetch_add(1, Ordering::Relaxed);
-        self.playbin
+        self.deck_el(active)
             .set_state(gst::State::Playing)
             .map(|_| ())
             .map_err(|e| anyhow::anyhow!("play: {e:?}"))?;
+        if let Some(ref session) = *self.crossfade.lock().unwrap() {
+            let _ = self
+                .deck_el(session.incoming_deck)
+                .set_state(gst::State::Playing);
+        }
         *self.state.lock().unwrap() = PlaybackState::Playing;
 
-        self.apply_current_rate(self.position_us());
+        self.apply_current_rate_to(active, self.position_us(), self.rate());
         Ok(())
     }
     pub fn pause(&self) -> Result<()> {
+        let active = self.active_deck();
         if self.state() == PlaybackState::Stopped
-            && self.playbin.current_state() != gst::State::Playing
+            && self.deck_el(active).current_state() != gst::State::Playing
         {
             return Ok(());
         }
-        self.playbin
+        self.deck_el(active)
             .set_state(gst::State::Paused)
             .map(|_| ())
             .map_err(|e| anyhow::anyhow!("pause: {e:?}"))?;
+        if let Some(ref session) = *self.crossfade.lock().unwrap() {
+            let _ = self
+                .deck_el(session.incoming_deck)
+                .set_state(gst::State::Paused);
+        }
         *self.state.lock().unwrap() = PlaybackState::Paused;
         Ok(())
     }
     pub fn stop(&self) -> Result<()> {
+        self.cancel_crossfade_internal();
         *self.pending_gapless.lock().unwrap() = None;
-        self.playbin
+        self.active_element()
             .set_state(gst::State::Ready)
             .map(|_| ())
             .map_err(|e| anyhow::anyhow!("stop: {e:?}"))?;
@@ -687,8 +1327,9 @@ impl AudioEngine {
         Ok(())
     }
     pub fn stop_after_error(&self) -> Result<()> {
+        self.cancel_crossfade_internal();
         *self.pending_gapless.lock().unwrap() = None;
-        self.playbin
+        self.active_element()
             .set_state(gst::State::Null)
             .map_err(|e| anyhow::anyhow!("encerrar áudio após falha: {e:?}"))?;
         self.set_state(PlaybackState::Stopped);
@@ -697,6 +1338,7 @@ impl AudioEngine {
     pub fn seek_us(&self, position: i64) -> Result<()> {
         let cur_rate = self.rate();
         let pos_ns = (position.max(0) as u64).saturating_mul(1000);
+        let active_el = self.active_element();
         let seek_event = gst::event::Seek::new(
             cur_rate,
             gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
@@ -705,10 +1347,10 @@ impl AudioEngine {
             gst::SeekType::None,
             gst::ClockTime::NONE,
         );
-        if self.playbin.send_event(seek_event) {
+        if active_el.send_event(seek_event) {
             Ok(())
         } else {
-            self.playbin
+            active_el
                 .seek_simple(
                     gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
                     gst::ClockTime::from_nseconds(pos_ns),
@@ -717,10 +1359,20 @@ impl AudioEngine {
         }
     }
     pub fn set_volume(&self, volume: f64) {
-        self.playbin.set_property("volume", volume.clamp(0.0, 1.0));
+        let clamped = volume.clamp(0.0, 1.0);
+        self.master_volume
+            .store((clamped as f32).to_bits(), Ordering::Relaxed);
+        let g0 = f32::from_bits(self.deck_gain_0.load(Ordering::Relaxed)) as f64;
+        let g1 = f32::from_bits(self.deck_gain_1.load(Ordering::Relaxed)) as f64;
+        if self.is_crossfading() {
+            self.apply_deck_gain(0, g0);
+            self.apply_deck_gain(1, g1);
+        } else {
+            self.apply_deck_gain(self.active_deck(), 1.0);
+        }
     }
     pub fn volume(&self) -> f64 {
-        self.playbin.property::<f64>("volume")
+        f32::from_bits(self.master_volume.load(Ordering::Relaxed)) as f64
     }
     pub fn rate(&self) -> f64 {
         f32::from_bits(self.rate.load(Ordering::Relaxed)) as f64
@@ -738,18 +1390,18 @@ impl AudioEngine {
                 gst::SeekType::None,
                 gst::ClockTime::NONE,
             );
-            let _ = self.playbin.send_event(seek_event);
+            let _ = self.active_element().send_event(seek_event);
         }
     }
     pub fn position_us(&self) -> i64 {
-        self.playbin
+        self.active_element()
             .query_position::<gst::ClockTime>()
             .map(|v| v.nseconds() as i64 / 1000)
             .unwrap_or(0)
     }
     #[allow(dead_code)]
     pub fn duration_us(&self) -> i64 {
-        self.playbin
+        self.active_element()
             .query_duration::<gst::ClockTime>()
             .map(|v| v.nseconds() as i64 / 1000)
             .unwrap_or(0)
@@ -766,14 +1418,46 @@ impl AudioEngine {
     pub fn reset_vu_levels(&self) {
         self.level_l.store((-80.0f32).to_bits(), Ordering::Relaxed);
         self.level_r.store((-80.0f32).to_bits(), Ordering::Relaxed);
+        self.aux_level_l
+            .store((-80.0f32).to_bits(), Ordering::Relaxed);
+        self.aux_level_r
+            .store((-80.0f32).to_bits(), Ordering::Relaxed);
     }
     pub fn vu_levels(&self) -> (f64, f64) {
-        let l = f32::from_bits(self.level_l.load(Ordering::Relaxed)) as f64;
-        let r = f32::from_bits(self.level_r.load(Ordering::Relaxed)) as f64;
+        if self.is_crossfading() {
+            let l0 = f32::from_bits(self.level_l.load(Ordering::Relaxed)) as f64;
+            let r0 = f32::from_bits(self.level_r.load(Ordering::Relaxed)) as f64;
+            let l1 = f32::from_bits(self.aux_level_l.load(Ordering::Relaxed)) as f64;
+            let r1 = f32::from_bits(self.aux_level_r.load(Ordering::Relaxed)) as f64;
+            let g0 = f32::from_bits(self.deck_gain_0.load(Ordering::Relaxed)) as f64;
+            let g1 = f32::from_bits(self.deck_gain_1.load(Ordering::Relaxed)) as f64;
+            let combine = |db_a: f64, ga: f64, db_b: f64, gb: f64| -> f64 {
+                let aa = if db_a > -79.0 {
+                    ga * 10.0_f64.powf(db_a / 20.0)
+                } else {
+                    0.0
+                };
+                let ab = if db_b > -79.0 {
+                    gb * 10.0_f64.powf(db_b / 20.0)
+                } else {
+                    0.0
+                };
+                let sum = (aa * aa + ab * ab).sqrt();
+                if sum <= 1e-4 {
+                    -80.0
+                } else {
+                    (20.0 * sum.log10()).clamp(-80.0, 0.0)
+                }
+            };
+            return (combine(l0, g0, l1, g1), combine(r0, g0, r1, g1));
+        }
+        let (ll, lr) = self.level_pair(self.active_deck());
+        let l = f32::from_bits(ll.load(Ordering::Relaxed)) as f64;
+        let r = f32::from_bits(lr.load(Ordering::Relaxed)) as f64;
         (l, r)
     }
     pub fn metadata(&self) -> TrackMetadata {
-        self.metadata.lock().unwrap().clone()
+        self.meta_arc(self.active_deck()).lock().unwrap().clone()
     }
     pub fn metadata_version(&self) -> u64 {
         self.metadata_ver.load(Ordering::Relaxed)
@@ -787,16 +1471,31 @@ impl AudioEngine {
 
     /// Identidade leve para os indicadores: não copia imagens ou demais tags.
     pub fn playback_identity(&self) -> (PlaybackState, String) {
-        (self.state(), self.metadata.lock().unwrap().uri.clone())
+        (
+            self.state(),
+            self.meta_arc(self.active_deck())
+                .lock()
+                .unwrap()
+                .uri
+                .clone(),
+        )
+    }
+    pub fn active_element(&self) -> &gst::Element {
+        self.deck_el(self.active_deck())
     }
     pub fn element(&self) -> &gst::Element {
-        &self.playbin
+        self.active_element()
     }
 
     /// Processa TAG/STREAM e mensagens level do bus para a UI consultar metadados e dinâmica de áudio.
     #[allow(dead_code)]
     pub fn handle_message(&self, message: &gst::Message) {
+        self.handle_deck_message(self.active_deck(), message);
+    }
+
+    pub fn handle_deck_message(&self, deck_idx: usize, message: &gst::Message) {
         use gst::MessageView;
+        let is_active = self.active_deck() == deck_idx;
         match message.view() {
             MessageView::Element(element_msg) => {
                 if let Some(s) = element_msg.structure() {
@@ -810,17 +1509,16 @@ impl AudioEngine {
                                 } else {
                                     db_l
                                 };
-                                self.level_l
-                                    .store((db_l as f32).to_bits(), Ordering::Relaxed);
-                                self.level_r
-                                    .store((db_r as f32).to_bits(), Ordering::Relaxed);
+                                let (ll, lr) = self.level_pair(deck_idx);
+                                ll.store((db_l as f32).to_bits(), Ordering::Relaxed);
+                                lr.store((db_r as f32).to_bits(), Ordering::Relaxed);
                             }
                         }
                     }
                 }
             }
             MessageView::Tag(tags) => {
-                let mut m = self.metadata.lock().unwrap();
+                let mut m = self.meta_arc(deck_idx).lock().unwrap();
                 if let Some(v) = tags.tags().get::<gst::tags::Title>() {
                     m.title = v.get().to_string();
                 }
@@ -854,25 +1552,57 @@ impl AudioEngine {
                     }
                 }
                 drop(m);
-                self.metadata_ver.fetch_add(1, Ordering::Relaxed);
+                if is_active {
+                    self.metadata_ver.fetch_add(1, Ordering::Relaxed);
+                }
             }
             MessageView::StreamStart(_) => {
-                self.commit_pending_gapless(true);
-                self.refresh_stream_info();
+                if is_active {
+                    self.commit_pending_gapless(true);
+                }
+                self.refresh_stream_info_for(deck_idx, is_active);
             }
             MessageView::AsyncDone(_) | MessageView::DurationChanged(_) => {
                 let d = self
-                    .playbin
+                    .deck_el(deck_idx)
                     .query_duration::<gst::ClockTime>()
                     .map(|v| v.nseconds() as i64 / 1000)
                     .unwrap_or(0);
-                self.metadata.lock().unwrap().duration_us = d;
-                self.metadata_ver.fetch_add(1, Ordering::Relaxed);
+                self.meta_arc(deck_idx).lock().unwrap().duration_us = d;
+                if matches!(message.view(), MessageView::AsyncDone(_)) {
+                    let cue_us = self.pending_cue_atom(deck_idx).swap(0, Ordering::AcqRel);
+                    if cue_us >= 500_000 && d > cue_us + 4_000_000 {
+                        let seek_rate = self
+                            .crossfade
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .filter(|s| s.incoming_deck == deck_idx)
+                            .and_then(|s| s.blend_rate)
+                            .unwrap_or_else(|| self.rate());
+                        let pos_ns = (cue_us as u64).saturating_mul(1000);
+                        let seek_event = gst::event::Seek::new(
+                            seek_rate,
+                            gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                            gst::SeekType::Set,
+                            gst::ClockTime::from_nseconds(pos_ns),
+                            gst::SeekType::None,
+                            gst::ClockTime::NONE,
+                        );
+                        let _ = self.deck_el(deck_idx).send_event(seek_event);
+                    }
+                }
+                if is_active {
+                    self.metadata_ver.fetch_add(1, Ordering::Relaxed);
+                }
             }
             MessageView::Error(error) => {
-                self.commit_pending_gapless(false);
+                if is_active {
+                    self.commit_pending_gapless(false);
+                }
                 eprintln!(
-                    "GStreamer audio error: {} ({:?})",
+                    "GStreamer audio error (deck {}): {} ({:?})",
+                    deck_idx,
                     error.error(),
                     error.debug()
                 );
@@ -881,15 +1611,15 @@ impl AudioEngine {
         }
     }
 
-    fn refresh_stream_info(&self) {
-        let Some(pad) = self.playbin.static_pad("audio_0") else {
+    fn refresh_stream_info_for(&self, deck_idx: usize, bump_ver: bool) {
+        let Some(pad) = self.deck_el(deck_idx).static_pad("audio_0") else {
             return;
         };
         let Some(caps) = pad.current_caps() else {
             return;
         };
         let Some(s) = caps.structure(0) else { return };
-        let mut m = self.metadata.lock().unwrap();
+        let mut m = self.meta_arc(deck_idx).lock().unwrap();
         let name = s.name();
         if m.codec.is_empty() || name != "audio/x-raw" {
             m.codec = name.to_string();
@@ -901,7 +1631,9 @@ impl AudioEngine {
                 .and_then(|format| raw_audio_bit_depth(&format))
         });
         drop(m);
-        self.metadata_ver.fetch_add(1, Ordering::Relaxed);
+        if bump_ver {
+            self.metadata_ver.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -921,6 +1653,10 @@ fn make_audio_sink() -> Result<gst::Element> {
     let bin = gst::Bin::new();
     let convert = gst::ElementFactory::make("audioconvert").build()?;
     let resample = gst::ElementFactory::make("audioresample").build()?;
+    let xfade_vol = gst::ElementFactory::make("volume")
+        .name("xfade-vol")
+        .property("volume", 1.0_f64)
+        .build()?;
     let level = gst::ElementFactory::make("level")
         .property("interval", 25_000_000_u64)
         .property("post-messages", true)
@@ -928,8 +1664,8 @@ fn make_audio_sink() -> Result<gst::Element> {
     let sink = gst::ElementFactory::make("autoaudiosink")
         .build()
         .context("plugin autoaudiosink ausente")?;
-    bin.add_many([&convert, &resample, &level, &sink])?;
-    gst::Element::link_many([&convert, &resample, &level, &sink])?;
+    bin.add_many([&convert, &resample, &xfade_vol, &level, &sink])?;
+    gst::Element::link_many([&convert, &resample, &xfade_vol, &level, &sink])?;
     let pad = convert
         .static_pad("sink")
         .context("pad do audioconvert ausente")?;
@@ -1072,12 +1808,18 @@ mod tests {
     fn test_fakesink_engine(connect_gapless_cb: bool) -> AudioEngine {
         gst::init().unwrap();
         let playbin = gst::ElementFactory::make("playbin3").build().unwrap();
+        let aux_playbin = gst::ElementFactory::make("playbin3").build().unwrap();
         let sink = gst::ElementFactory::make("fakesink").build().unwrap();
+        let aux_sink = gst::ElementFactory::make("fakesink").build().unwrap();
         playbin.set_property("audio-sink", &sink);
+        aux_playbin.set_property("audio-sink", &aux_sink);
         let engine = AudioEngine {
             playbin,
+            aux_playbin,
+            active_deck: Arc::new(AtomicUsize::new(0)),
             state: Default::default(),
             metadata: Default::default(),
+            aux_metadata: Default::default(),
             metadata_ver: Arc::new(AtomicU64::new(1)),
             attempts: Arc::new(AtomicU64::new(0)),
             track_seq: Arc::new(AtomicU64::new(0)),
@@ -1086,7 +1828,16 @@ mod tests {
             repeat_mode: Arc::new(AtomicU8::new(RepeatMode::Off.to_u8())),
             level_l: Arc::new(AtomicU32::new((-80.0f32).to_bits())),
             level_r: Arc::new(AtomicU32::new((-80.0f32).to_bits())),
+            aux_level_l: Arc::new(AtomicU32::new((-80.0f32).to_bits())),
+            aux_level_r: Arc::new(AtomicU32::new((-80.0f32).to_bits())),
             rate: Arc::new(AtomicU32::new((1.0f32).to_bits())),
+            master_volume: Arc::new(AtomicU32::new((1.0f32).to_bits())),
+            deck_gain_0: Arc::new(AtomicU32::new((1.0f32).to_bits())),
+            deck_gain_1: Arc::new(AtomicU32::new((0.0f32).to_bits())),
+            pending_cue_0_us: Arc::new(AtomicI64::new(0)),
+            pending_cue_1_us: Arc::new(AtomicI64::new(0)),
+            crossfade: Default::default(),
+            crossfade_managed: Arc::new(AtomicBool::new(false)),
             pending_gapless: Default::default(),
         };
         if connect_gapless_cb {
@@ -1567,6 +2318,162 @@ mod tests {
         assert!((engine.rate() - 1.05).abs() < 0.001);
 
         let _ = engine.playbin.set_state(gst::State::Null);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn equal_power_curve_preserves_constant_power() {
+        let (a0, b0) = equal_power_gains(0.0);
+        assert!((a0 - 1.0).abs() < 1e-6);
+        assert!(b0.abs() < 1e-6);
+
+        let (am, bm) = equal_power_gains(0.5);
+        assert!((am * am + bm * bm - 1.0).abs() < 1e-6);
+        assert!((am - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-4);
+
+        let (a1, b1) = equal_power_gains(1.0);
+        assert!(a1.abs() < 1e-6);
+        assert!((b1 - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn crossfade_transitions_active_deck_and_preserves_master_volume() {
+        let engine = test_fakesink_engine(false);
+        engine.set_volume(0.75);
+        let dir = std::env::temp_dir().join(format!(
+            "vinyl-xfade-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let wav = make_wav_bytes(16000); // 2s at 8 kHz
+        let t1 = dir.join("deck_a.wav");
+        let t2 = dir.join("deck_b.wav");
+        std::fs::write(&t1, &wav).unwrap();
+        std::fs::write(&t2, &wav).unwrap();
+
+        engine.play_files(&[t1.clone(), t2.clone()], 0).unwrap();
+        assert_eq!(engine.active_deck(), 0);
+        engine
+            .start_crossfade(
+                1,
+                &t2,
+                0.8,
+                Some(1.02),
+                "Smart Flow".into(),
+                "Mix Inteligente".into(),
+            )
+            .unwrap();
+        assert!(engine.is_crossfading());
+        assert!((engine.volume() - 0.75).abs() < 1e-4);
+
+        let snap = engine.crossfade_snapshot().unwrap();
+        assert_eq!(snap.outgoing_deck, 0);
+        assert_eq!(snap.incoming_deck, 1);
+        assert!(snap.incoming_meta.uri.ends_with("deck_b.wav"));
+
+        std::thread::sleep(Duration::from_millis(200));
+        let mid = engine.step_crossfade();
+        assert!(mid.is_some());
+        assert!((engine.volume() - 0.75).abs() < 1e-4);
+
+        engine.finish_crossfade();
+        assert!(!engine.is_crossfading());
+        assert_eq!(engine.active_deck(), 1);
+        assert_eq!(engine.queue_snapshot().current, Some(1));
+        assert!(engine.metadata().uri.ends_with("deck_b.wav"));
+        assert!((engine.volume() - 0.75).abs() < 1e-4);
+
+        let _ = engine.playbin.set_state(gst::State::Null);
+        let _ = engine.aux_playbin.set_state(gst::State::Null);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn manual_crossfader_drag_holds_cancels_and_completes() {
+        let engine = test_fakesink_engine(false);
+        let dir = std::env::temp_dir().join(format!(
+            "vinyl-mxfade-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let wav = make_wav_bytes(16000);
+        let t1 = dir.join("deck_a.wav");
+        let t2 = dir.join("deck_b.wav");
+        std::fs::write(&t1, &wav).unwrap();
+        std::fs::write(&t2, &wav).unwrap();
+
+        engine.play_files(&[t1.clone(), t2.clone()], 0).unwrap();
+        // Drag slightly and release near Deck A -> snaps back / cancels crossfade.
+        engine
+            .set_manual_crossfade(
+                1,
+                &t2,
+                0.08,
+                DjCrossfadeCurve::LongFade,
+                None,
+                0,
+                "Manual".into(),
+                "Manual".into(),
+            )
+            .unwrap();
+        assert_eq!(
+            engine.release_manual_crossfade(),
+            ManualReleaseOutcome::CancelledToDeckA
+        );
+        assert!(!engine.is_crossfading());
+        assert_eq!(engine.active_deck(), 0);
+
+        // Drag to middle and release -> holds manual blend without auto-advancing step_crossfade.
+        engine
+            .set_manual_crossfade(
+                1,
+                &t2,
+                0.50,
+                DjCrossfadeCurve::HardCut,
+                None,
+                0,
+                "Manual".into(),
+                "Manual".into(),
+            )
+            .unwrap();
+        assert_eq!(
+            engine.release_manual_crossfade(),
+            ManualReleaseOutcome::HeldBlend(0.50)
+        );
+        std::thread::sleep(Duration::from_millis(60));
+        let held = engine.step_crossfade().unwrap();
+        assert!((held - 0.50).abs() < 1e-6);
+
+        // Drag near Deck B and release -> completes transition and flips active deck to 1.
+        engine
+            .set_manual_crossfade(
+                1,
+                &t2,
+                0.92,
+                DjCrossfadeCurve::HardCut,
+                None,
+                0,
+                "Manual".into(),
+                "Manual".into(),
+            )
+            .unwrap();
+        assert_eq!(
+            engine.release_manual_crossfade(),
+            ManualReleaseOutcome::CompletedToDeckB
+        );
+        assert!(!engine.is_crossfading());
+        assert_eq!(engine.active_deck(), 1);
+
+        let _ = engine.playbin.set_state(gst::State::Null);
+        let _ = engine.aux_playbin.set_state(gst::State::Null);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

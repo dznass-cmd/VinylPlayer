@@ -80,7 +80,7 @@ pub fn set_current(lang: Language) {
     });
 }
 
-pub fn bind_label(label: &gtk::Label, text: fn(Language) -> &'static str) {
+pub fn bind_label(label: &gtk::Label, text: impl Fn(Language) -> &'static str + 'static) {
     label.set_text(text(current()));
     let weak = label.downgrade();
     BINDINGS.with(|cell| {
@@ -95,7 +95,10 @@ pub fn bind_label(label: &gtk::Label, text: fn(Language) -> &'static str) {
     });
 }
 
-pub fn bind_tooltip(widget: &impl IsA<gtk::Widget>, text: fn(Language) -> &'static str) {
+pub fn bind_tooltip(
+    widget: &impl IsA<gtk::Widget>,
+    text: impl Fn(Language) -> &'static str + 'static,
+) {
     widget.set_tooltip_text(Some(text(current())));
     let weak = widget.as_ref().downgrade();
     BINDINGS.with(|cell| {
@@ -110,9 +113,12 @@ pub fn bind_tooltip(widget: &impl IsA<gtk::Widget>, text: fn(Language) -> &'stat
     });
 }
 
-pub fn bind_button_label(button: &gtk::Button, text: fn(Language) -> &'static str) {
-    button.set_label(text(current()));
-    let weak = button.downgrade();
+pub fn bind_button_label(
+    button: &impl IsA<gtk::Button>,
+    text: impl Fn(Language) -> &'static str + 'static,
+) {
+    button.as_ref().set_label(text(current()));
+    let weak = button.as_ref().downgrade();
     BINDINGS.with(|cell| {
         cell.borrow_mut().push(Box::new(move |lang| {
             if let Some(btn) = weak.upgrade() {
@@ -125,7 +131,10 @@ pub fn bind_button_label(button: &gtk::Button, text: fn(Language) -> &'static st
     });
 }
 
-pub fn bind_placeholder(entry: &gtk::SearchEntry, text: fn(Language) -> &'static str) {
+pub fn bind_placeholder(
+    entry: &gtk::SearchEntry,
+    text: impl Fn(Language) -> &'static str + 'static,
+) {
     entry.set_placeholder_text(Some(text(current())));
     let weak = entry.downgrade();
     BINDINGS.with(|cell| {
@@ -275,6 +284,8 @@ pub fn nav_title(lang: Language, page: &str) -> &'static str {
         (Language::En, "albums") => "Albums",
         (Language::PtBr, "albums") => "Álbuns",
         (_, "playlists") => "Playlists",
+        (Language::En, "dj") => "DJ Booth",
+        (Language::PtBr, "dj") => "Cabine DJ",
         (Language::En, _) => "Turntable",
         (Language::PtBr, _) => "Toca-Discos",
     }

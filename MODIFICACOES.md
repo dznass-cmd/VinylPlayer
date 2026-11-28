@@ -1,6 +1,33 @@
 # Alterações do VinylPlayer
 
-Registro atualizado em 23/11/2026.
+Registro atualizado em 28/11/2026.
+
+## Release v0.4.1 — Interactive Crossfader, Mix Curves, Full-Library Sweep & DJ UX Refinements — 28/11/2026
+
+- **Interactive Crossfader Console & Curves (`src/audio.rs`, `src/dj.rs`, `src/dj_view.rs`):**
+  - Made the horizontal crossfader rail in the Cairo DJ console directly draggable via mouse/pointer (`GestureDrag` + `ew-resize` hover feedback), supporting live manual Deck A ↔ B blending, hold-in-place middle blends, snap-back cancel near Deck A, and instant Deck B promotion near 100%.
+  - Added three selectable crossfade curves (`DjCrossfadeCurve::EqualPower`, `LongFade`, `HardCut`) persisted in `state.json` (`dj_curve`) and rendered live inside the DJ console curve graph.
+- **Intro Silence Cue Trimming & Stricter Anti-Repeat (`src/dj.rs`, `src/audio.rs`):**
+  - Extended `analyze_track_acoustics_gst` to measure leading silence (`intro_silence_ms`) on initial preroll frames and seek incoming Deck B tracks cleanly past silent intros upon `AsyncDone` when `Trim Intro Silence` (`dj_trim_intro`) is active.
+  - Replaced the 30/40-track cap in background acoustic profiling with a full-library rotating cursor (`analyze_cursor`), raised persistent acoustic cache capacity to 20,000 tracks, expanded play history to 48 tracks, and added a recent-artists cooldown penalty across all DJ modes.
+- **Next Control Integration, Start Session & Up-Next Preview (`src/dj_view.rs`, `src/main.rs`):**
+  - Routed transport Next (`⏭️`), `Right`, and `Page_Down` through `DjController::next_track`, completing active crossfades or triggering snappy DJ transitions to Deck B when Auto-DJ is active.
+  - Added a `Start DJ` session button for starting Auto-DJ directly from stopped/paused state, an interactive `Up Next · Setlist Preview` card for one-click mixing to upcoming candidates, an automatic catalog-growth poll, and a clear inline notice banner when music folders or drives are unavailable.
+
+## Release v0.4.0 — Auto-DJ Booth & Intelligent / Random Mix Modes — 26/11/2026
+
+- **Dual-Deck Equal-Power Crossfade Engine (`src/audio.rs`):**
+  - Added a second `playbin3` audio deck (`aux_playbin`) with dedicated per-deck `xfade-vol` GStreamer gain staging, equal-power cosine/sine curve (`equal_power_gains`), RMS-combined stereo VU metering during transitions, seamless active-deck handoff without playback interruption, and automatic `fakesink` mirroring for headless tests.
+  - Added `current_track_path`, `enqueue_dj_track`, `replace_upcoming_tracks`, `start_crossfade`, `step_crossfade`, `finish_crossfade`, and `cancel_crossfade` controls synced across playback state, pause/resume, and both deck buses.
+- **Intelligent & Random Auto-DJ Selection Engine (`src/dj.rs`, `src/library.rs`):**
+  - Extended metadata tag extraction (`TrackTags` v4 cache) to read `genre`, `bpm` (`TBPM`/`tempo`), and `initial_key` (`TKEY`/`InitialKey`).
+  - Added fast silent GStreamer background acoustic profiling (`analyze_track_acoustics_gst`) estimating RMS energy and BPM via onset-flux autocorrelation, persisted in `~/.cache/vinylplayer/dj-acoustics-v1.json`.
+  - Added Camelot harmonic wheel parser and compatibility scorer (`parse_camelot_key`, `camelot_compatibility`).
+  - Implemented five active DJ modes across Random (`Random Flow`, `Party Chaos`) and Intelligent (`Smart Flow`, `Seed Radio`, `Energy Journey`) categories, with anti-repetition history, `QueueOnly` vs `LibraryAutoFill` selection pools, `Smart Outro Cue` fade-out silence detection, and optional `Auto Tempo Blend` (±6% BPM sync).
+- **DJ Booth View & Quick Transport Popover (`src/dj_view.rs`, `src/main.rs`, `src/theme.rs`, `src/state.rs`, `src/i18n.rs`):**
+  - Added the `DJ Booth` (`Alt+5`) view featuring a live Cairo Dual-Deck & Crossfader console, interactive mode cards, crossfade overlap presets (`0s`–`12s`), `Mix Now`, `Re-roll Next`, and `Build Set (+20)` queue generation.
+  - Added a quick DJ popover button on the bottom transport bar and a clickable DJ status pill on the Turntable header.
+  - Persisted DJ configuration and `"dj"` view state in `~/.config/vinylplayer/state.json` and themed all new DJ controls across all 6 analog palettes with full English and Brazilian Portuguese localization.
 
 ## Release v0.3.1 — CI & Packaging Reliability — 23/11/2026
 
